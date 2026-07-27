@@ -1,0 +1,122 @@
+{
+  "schema": 1,
+  "recorded_at": "2026-07-27",
+  "provenance": "Kaggle notebook, free tier. First run of a generated plan on a working CUDA backend.",
+  "hardware": {
+    "gpu": "Tesla P100-PCIE-16GB",
+    "vram_bytes": 17179869184,
+    "driver": "580.159.04",
+    "cuda": "12.8.93",
+    "compute_capability": "6.0",
+    "cores": 4,
+    "ram_bytes": 33607024640,
+    "platform": "Linux, Kaggle container"
+  },
+  "runtime": {
+    "engine": "llama.cpp",
+    "build": "cmake -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=60",
+    "build_note": "CMake could not resolve CUDA::cuda_driver until pointed at libcuda.so explicitly; the container ships only libcuda.so.1 and the toolkit stub sits under /usr/local/cuda-12.8/compat/, not lib64/stubs/.",
+    "backend": "cuda",
+    "benchmark": "llama-bench -p 512 -n 128",
+    "context_note": "llama-bench sizes its context from -p + -n, so this ran at roughly 640 tokens while the plan was computed for 8192. See the caveat below."
+  },
+  "model": {
+    "name": "Qwen3-30B-A3B-Q4_K_M",
+    "architecture": "qwen3moe",
+    "total_bytes": 18578120704,
+    "routed_expert_bytes": 17557428142,
+    "active_bytes_per_token": 2147483648,
+    "blocks": 48
+  },
+  "plan": {
+    "cpu_expert_layers": 9,
+    "gpu_expert_layers": 39,
+    "reserve_gib": 1.0,
+    "assumed_context": 8192,
+    "headroom_gib": 0.04
+  },
+  "runs": {
+    "of_tune_plan": {
+      "pp512": 290.37,
+      "tg128": 32.84
+    },
+    "n_cpu_moe_9": {
+      "pp512": 257.74,
+      "tg128": 32.91
+    },
+    "guess_low_6": {
+      "pp512": 289.15,
+      "tg128": 38.69
+    },
+    "guess_high_24": {
+      "pp512": 180.07,
+      "tg128": 18.34
+    },
+    "all_on_gpu": "FAILED: failed to load model",
+    "cpu_baseline": {
+      "pp512": 118.84,
+      "tg128": 6.79
+    }
+  },
+  "findings": {
+    "offload_path_works": "The generated -ot argument runs on a real CUDA backend and delivers 32.84 tok/s against 6.79 on CPU — 4.8x. This was the project's central unproven claim.",
+    "regex_is_correct": "of_tune_plan and n_cpu_moe_9 agree to 0.2% (32.84 vs 32.91), which is what identical placement expressed two ways should look like. It also confirms the plan is a contiguous suffix and therefore expressible by --n-cpu-moe.",
+    "over_reservation": "Retracted. At the 8192 context the plan was actually computed for, a guess of 6 CPU layers OOMs and 4 will not even load, while the planner's 9 runs at 32.87 tok/s. The round-4 result — where 6 was 18% faster — came from benchmarking at ~640 tokens a plan built for 8192. The test was wrong, not the planner.",
+    "bad_guesses_are_expensive": "24 CPU layers cost 44% of decode speed (18.34 vs 32.84), so the cost of guessing badly in the cautious direction is real.",
+    "card_genuinely_too_small": "all_on_gpu failed to load, confirming 17.3 GiB does not fit in 16 GiB and the test exercised the intended path.",
+    "the_window_is_narrow": "9 CPU layers is essentially the minimum feasible: the plan leaves 0.04 GiB spare, and one layer fewer would need 0.34 GiB more on the GPU. One step down crashes; three steps up (12) costs 13% of decode speed for ever. That narrow band between crashing and wasting is the argument for computing the number rather than guessing it, and it is now measured rather than asserted.",
+    "the_plan_is_fragile_at_the_edge": "0.04 GiB of headroom is very little. A different llama.cpp build, a different driver or different allocator fragmentation could turn this optimal plan into an OOM. Optimal and robust are not the same choice, and --reserve is the dial between them.",
+    "estimate_is_regime_limited": "The plan chosen was right and the speed printed for it was wrong by 2.2x. Those are separate claims and only the first was ever validated on the laptop, where everything streamed from RAM."
+  },
+  "cpu_calibration": {
+    "note": "31.3 GiB of RAM holds the model, so unlike the Colab attempt this baseline is a memory measurement rather than a disk one.",
+    "decode_tok_s": 6.79,
+    "active_bytes_per_token": 2147483648,
+    "implied_read_bandwidth_gbs": 14.6,
+    "threads": 4
+  },
+  "runs_at_real_8192_context": {
+    "_note": "llama-bench -p 7936 -n 256, so the KV cache is the 8192 the plan was computed for.",
+    "of_tune_plan_9": {
+      "pp": 259.14,
+      "tg": 32.87
+    },
+    "guess_low_6": "FAILED: failed to create context",
+    "guess_low_4": "FAILED: failed to load model",
+    "guess_12": {
+      "pp": 208.88,
+      "tg": 28.63
+    }
+  },
+  "prediction_accuracy": {
+    "_note": "Derived from the runs above; the 100% row is exact by construction because the effective bandwidth was taken from it. The trend between 26% and 10% is independent.",
+    "effective_read_bandwidth_gbs": 14.6,
+    "by_ram_share": [
+      {
+        "cpu_layers": 48,
+        "from_ram_gb": 2.147,
+        "share": 1.0,
+        "predicted": 6.8,
+        "measured": 6.79,
+        "ratio": 1.0
+      },
+      {
+        "cpu_layers": 24,
+        "from_ram_gb": 0.549,
+        "share": 0.26,
+        "predicted": 26.6,
+        "measured": 18.34,
+        "ratio": 1.45
+      },
+      {
+        "cpu_layers": 9,
+        "from_ram_gb": 0.206,
+        "share": 0.1,
+        "predicted": 71.1,
+        "measured": 32.87,
+        "ratio": 2.16
+      }
+    ],
+    "conclusion": "The cost model is a bandwidth model, and it is accurate exactly while bandwidth is the constraint. As placement moves weight onto the GPU the per-token RAM traffic shrinks, something else becomes the limit, and the prediction runs away — 2.16x optimistic at a tenth of the traffic. The ranking of plans survives (more offload is monotonically slower), so placement decisions remain sound; it is the printed number that stops being trustworthy. of plan now says so below 30%."
+  }
+}

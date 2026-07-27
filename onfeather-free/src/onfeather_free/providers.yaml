@@ -1,0 +1,197 @@
+# Free-tier registry.
+#
+# These numbers are HINTS, not truth. Providers change limits without notice, so
+# nothing here is load-bearing: the ledger reconciles against `x-ratelimit-*`
+# response headers where providers send them, and a 429 overrides everything.
+# Stale entries cost a little routing efficiency, never correctness.
+#
+# `verified_at` is when a human last checked the provider's published limits.
+# Pull requests updating these are the most useful contribution to this repo.
+#
+# One account per provider, by design. Every provider's terms permit programmatic
+# use of a free tier; all of them forbid creating multiple accounts to multiply
+# limits. The config maps each provider to exactly one credential and there is
+# no mechanism to register a second.
+
+version: 1
+
+providers:
+  groq:
+    label: Groq
+    base_url: https://api.groq.com/openai/v1
+    api_key_env: GROQ_API_KEY
+    openai_compatible: true
+    sends_rate_limit_headers: true
+    verified_at: 2026-07-25
+    capabilities: [chat, fast, reasoning]
+    notes: Fastest free inference available. Preferred for interactive use.
+    models:
+      - id: llama-3.3-70b-versatile
+        capabilities: [chat, reasoning]
+        limits:
+          - {unit: requests, limit: 30, window: minute, reset: rolling}
+          - {unit: requests, limit: 14400, window: day, reset: utc_midnight}
+          - {unit: tokens, limit: 6000, window: minute, reset: rolling}
+      - id: llama-3.1-8b-instant
+        capabilities: [chat, fast]
+        limits:
+          - {unit: requests, limit: 30, window: minute, reset: rolling}
+          - {unit: requests, limit: 14400, window: day, reset: utc_midnight}
+          - {unit: tokens, limit: 100000, window: minute, reset: rolling}
+
+  google:
+    label: Google AI Studio
+    # Note: no trailing slash. The OpenAI-compat path is appended directly.
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    api_key_env: GEMINI_API_KEY
+    openai_compatible: true
+    # Verified 2026-07-26: sends no x-ratelimit-* headers at all, so accounting
+    # here stays estimated and only a 429 corrects it.
+    sends_rate_limit_headers: false
+    verified_at: 2026-07-26
+    capabilities: [chat, long_context, vision, reasoning]
+    notes: >
+      Free-tier prompts may be used for model training; route private content
+      elsewhere with --private. Free-tier availability is per-project: a 429
+      citing "limit: 0" on generate_content_free_tier_* means the project has no
+      free allowance at all, which no amount of waiting will fix.
+    models:
+      - id: gemini-2.0-flash
+        capabilities: [chat, long_context, vision, fast]
+        limits:
+          - {unit: requests, limit: 15, window: minute, reset: rolling}
+          - {unit: requests, limit: 1500, window: day, reset: pacific_midnight}
+      - id: gemini-2.0-flash-lite
+        capabilities: [chat, fast]
+        limits:
+          - {unit: requests, limit: 30, window: minute, reset: rolling}
+          - {unit: requests, limit: 1500, window: day, reset: pacific_midnight}
+
+  cerebras:
+    label: Cerebras
+    base_url: https://api.cerebras.ai/v1
+    api_key_env: CEREBRAS_API_KEY
+    openai_compatible: true
+    sends_rate_limit_headers: true
+    verified_at: 2026-07-26
+    capabilities: [chat, fast]
+    notes: >
+      Verified 2026-07-26: answered 402 Payment Required on every model with a
+      valid key, so the free tier is not available on all accounts. Left in the
+      registry because eligibility varies; the client sidelines a provider that
+      answers 402 rather than retrying it on every request.
+    models:
+      - id: gpt-oss-120b
+        capabilities: [chat, reasoning]
+        limits:
+          - {unit: requests, limit: 30, window: minute, reset: rolling}
+          - {unit: tokens, limit: 60000, window: minute, reset: rolling}
+      - id: gemma-4-31b
+        capabilities: [chat, fast]
+        limits:
+          - {unit: requests, limit: 30, window: minute, reset: rolling}
+          - {unit: tokens, limit: 60000, window: minute, reset: rolling}
+
+  github:
+    label: GitHub Models
+    base_url: https://models.inference.ai.azure.com
+    api_key_env: GITHUB_TOKEN
+    openai_compatible: true
+    sends_rate_limit_headers: true
+    verified_at: 2026-07-26
+    capabilities: [chat, code, reasoning]
+    notes: >
+      Hard per-request ceiling of 8k input / 4k output tokens. The limits below
+      are a floor: this account reported 20000 requests and 2M tokens per minute
+      in its headers, and header values always win over these.
+    models:
+      - id: gpt-4o-mini
+        capabilities: [chat, code, fast]
+        limits:
+          - {unit: requests, limit: 15, window: minute, reset: rolling}
+          - {unit: requests, limit: 150, window: day, reset: utc_midnight}
+
+  mistral:
+    label: Mistral La Plateforme
+    base_url: https://api.mistral.ai/v1
+    api_key_env: MISTRAL_API_KEY
+    openai_compatible: true
+    sends_rate_limit_headers: true
+    verified_at: 2026-07-26
+    capabilities: [chat, code]
+    notes: >
+      Spells its headers differently: x-ratelimit-remaining-req-minute rather
+      than -requests. Matching only the OpenAI spelling loses this provider
+      entirely, which is why headers.py parses the family.
+    models:
+      - id: mistral-small-latest
+        capabilities: [chat]
+        limits:
+          - {unit: requests, limit: 50, window: minute, reset: rolling}
+          - {unit: tokens, limit: 50000, window: minute, reset: rolling}
+      - id: codestral-latest
+        capabilities: [code]
+        limits:
+          - {unit: requests, limit: 50, window: minute, reset: rolling}
+          - {unit: tokens, limit: 50000, window: minute, reset: rolling}
+
+  openrouter:
+    label: OpenRouter
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+    openai_compatible: true
+    # Verified 2026-07-26: returns no x-ratelimit-* headers on completions,
+    # contrary to what its documentation implies.
+    sends_rate_limit_headers: false
+    verified_at: 2026-07-26
+    capabilities: [chat, reasoning]
+    notes: >
+      Limits are shared across all `:free` models and enforced per IP, so this
+      provider can be exhausted by something else on the same network. The `:free`
+      catalogue rotates often — re-check the model ids when routing starts
+      returning 404.
+    models:
+      - id: "google/gemma-4-26b-a4b-it:free"
+        capabilities: [chat, fast]
+        limits:
+          - {unit: requests, limit: 20, window: minute, reset: rolling}
+          - {unit: requests, limit: 200, window: day, reset: utc_midnight}
+      - id: "google/gemma-4-31b-it:free"
+        capabilities: [chat, reasoning]
+        limits:
+          - {unit: requests, limit: 20, window: minute, reset: rolling}
+          - {unit: requests, limit: 200, window: day, reset: utc_midnight}
+
+  cohere:
+    label: Cohere
+    base_url: https://api.cohere.ai/v1
+    api_key_env: COHERE_API_KEY
+    # Command does not expose an OpenAI-shaped /chat/completions endpoint, so
+    # this provider stays inert until a native adapter exists.
+    openai_compatible: false
+    sends_rate_limit_headers: true
+    verified_at: 2026-07-25
+    capabilities: [chat]
+    models:
+      - id: command-r
+        capabilities: [chat]
+        limits:
+          - {unit: requests, limit: 20, window: minute, reset: rolling}
+          - {unit: requests, limit: 1000, window: day, reset: utc_midnight}
+
+  ollama:
+    label: Ollama (local)
+    base_url: http://localhost:11434/v1
+    api_key_env: null
+    openai_compatible: true
+    sends_rate_limit_headers: false
+    local: true
+    verified_at: 2026-07-25
+    capabilities: [chat, code, private]
+    notes: >
+      Unlimited and private, but bounded by local hardware. Always last in the
+      routing order except for requests flagged private, where it is first.
+    models:
+      - id: qwen2.5:7b
+        capabilities: [chat, code, private]
+        limits: []

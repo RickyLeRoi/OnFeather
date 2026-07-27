@@ -1,0 +1,71 @@
+{
+  "schema": 1,
+  "recorded_at": "2026-07-26",
+  "fingerprint": "2844e51e21c5c4c1",
+  "provenance": "Rented Vast.ai container, RTX 3070 listing at $0.13/h. Shared host: treat every bandwidth figure as a lower bound with unknown contention.",
+  "hardware": {
+    "cpu": "AMD EPYC 7B12 64-Core Processor",
+    "physical_cores": 64,
+    "logical_cores": 128,
+    "entitled_vcpu": 18,
+    "isa": ["avx", "avx2", "f16c", "fma"],
+    "ram_bytes": 270069370880,
+    "ram_cgroup_limit_bytes": 34999996416,
+    "gpu": "NVIDIA GeForce RTX 3070 8 GiB (unused: CUDA would not initialise)",
+    "driver": "580.126.20",
+    "platform": "Linux 6.8.0-117-generic x86_64"
+  },
+  "bandwidth": {
+    "stream_add_single_gbs": 22.75,
+    "stream_add_multi_gbs": 43.78,
+    "by_threads_gbs": {"18": 74.5, "36": 74.4, "128": 25.2},
+    "note": "The 'multi' figure is measured across all 128 logical cores and is meaningless here: the container is entitled to about 18. Oversubscribing collapses bandwidth to a third. Two runs at 128 threads gave 43.8 and 25.2 GB/s, so contention on the shared host is severe. Only the 18-thread figure is used below."
+  },
+  "runtime": {
+    "engine": "llama.cpp",
+    "commit": "b1d4c65",
+    "build": "cmake -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86, built clean",
+    "backend": "cpu",
+    "backend_note": "CUDA compiled and linked but refused to initialise at runtime: 'failed to initialize CUDA: unknown error'. PyTorch 2.8.0+cu128 failed identically, so the fault is the host, not llama.cpp. /proc/driver/nvidia/gpus/ listed six GPUs while only /dev/nvidia2 was exposed to the container, and mknod was not permitted.",
+    "context": 8192
+  },
+  "runs": [
+    {
+      "model": "Qwen3-30B-A3B-Q4_K_M",
+      "architecture": "qwen3moe",
+      "quantisation": "Q4_K_M",
+      "dense": false,
+      "experts": "8 active of 128",
+      "total_bytes": 18578120704,
+      "active_bytes_per_token": 2147483648,
+      "threads": 18,
+      "pp512_tok_s": 95.89,
+      "tg128_tok_s": 23.64,
+      "predicted_tok_s": 26.7,
+      "predicted_range": [22.7, 29.4],
+      "verdict": "measured inside the predicted range"
+    }
+  ],
+  "thread_scaling_tg64": {
+    "8": 24.84,
+    "18": 26.42,
+    "36": 12.83,
+    "64": 6.67,
+    "note": "Decode gains 6% between 8 and 18 threads, so it is bandwidth-bound rather than compute-bound: the premise the planner rests on, confirmed on a machine unrelated to the one it was built on. Beyond the container's entitlement it collapses, and `nproc` here reports 128."
+  },
+  "weight_read_factor": {
+    "measured": 0.76,
+    "calculation": "26.42 tok/s * 2.147 GB/token = 56.7 GB/s effective, over 74.5 GB/s STREAM add at 18 threads",
+    "laptop_value": 1.25,
+    "verdict": "NOT universal. The constant calibrated on an Intel laptop (1.25x STREAM) does not transfer to this server (0.76x). Contention on a shared host is a plausible confound and this single point does not settle the cause, but it is enough to say the factor is machine-dependent — which is the argument for a hardware registry rather than a constant."
+  },
+  "offload_path": {
+    "ot_regex_accepted": true,
+    "note": "llama-bench accepted the generated -ot argument without a parse or regex error; the only error on that run was the CUDA init failure shared by all three runs. That rules out a malformed command or a wrong buffer-type name, which was the highest-value failure this exercise was meant to catch. It does NOT confirm the tensors were placed as intended: with no CUDA backend there was nothing to place them on.",
+    "still_unproven": "That the plan beats the CPU baseline on real CUDA hardware, and that it beats --n-cpu-moe."
+  },
+  "tool_bugs_found": [
+    "of probe reports the host's RAM (251.5 GiB) rather than the container's cgroup limit (32.6 GiB).",
+    "of probe reports 128 logical cores rather than the ~18 the container is entitled to, and the planner emits no -t recommendation. Accepting llama.cpp's default thread count here would have cost a 4x decode slowdown."
+  ]
+}
