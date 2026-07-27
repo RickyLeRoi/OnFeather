@@ -176,3 +176,78 @@ def test_balanced_is_the_default_strategy(registry, ledger, environ):
 def test_reason_is_populated(registry, ledger, environ):
     assert pick(registry, ledger, environ).reason
     assert router_module.STRATEGIES == (STRATEGY_BALANCED, STRATEGY_FAST, STRATEGY_LOCAL)
+
+
+# -- requirements and context ---------------------------------------------
+
+
+def test_a_required_capability_excludes_models_without_it(registry, ledger, environ):
+    options = candidates(registry, ledger, now=NOW, environ=environ, requires={"tools"})
+    assert {option.provider.name for option in options} == {"fastcloud", "bigcontext", "ollama"}
+
+    options = candidates(registry, ledger, now=NOW, environ=environ, requires={"vision"})
+    assert options == []
+
+
+def test_a_preference_only_reorders(registry, ledger, environ):
+    """A model without native schema support can still serve: the schema is
+    emulated in the prompt, which costs quality, not correctness."""
+    options = candidates(registry, ledger, now=NOW, environ=environ, prefers={"json_schema"})
+
+    assert options[0].provider.name == "bigcontext"
+    assert "fastcloud" in {option.provider.name for option in options}
+
+
+def test_a_model_too_small_for_the_prompt_is_excluded(registry, ledger, environ):
+    options = candidates(registry, ledger, now=NOW, environ=environ, min_context=500000)
+    assert {option.provider.name for option in options} == {"bigcontext"}
+
+
+def test_an_unknown_context_is_not_grounds_for_exclusion(registry, ledger, environ):
+    """0 means nobody recorded it, and guessing small would strand local models."""
+    options = candidates(
+        registry, ledger, now=NOW, environ={**environ, "NOKEY_API_KEY": "x"}, min_context=500000
+    )
+    assert "nokey" in {option.provider.name for option in options}
+
+
+def test_an_impossible_requirement_says_which_one(registry, ledger, environ):
+    with pytest.raises(NoRouteAvailable, match="vision"):
+        pick(registry, ledger, environ, requires={"vision"})
+
+
+def test_an_oversized_prompt_says_so(registry, ledger, environ):
+    with pytest.raises(NoRouteAvailable, match="context window"):
+        pick(registry, ledger, environ, min_context=2_000_000)
+
+
+def test_a_per_minute_token_limit_caps_a_single_request(registry, ledger, environ):
+    """A 128k model on a tier that passes 6k a minute is a 6k model: one request
+    cannot spend more than a window holds, and asking gets a 429 immediately."""
+    options = candidates(registry, ledger, now=NOW, environ=environ, min_context=10000)
+    assert "fastcloud" not in {option.provider.name for option in options}
+
+
+def test_the_ceiling_is_the_smaller_of_the_two(registry, ledger):
+    model = registry["fastcloud"].model("fast-70b")
+    status = ledger.status(registry["fastcloud"], NOW, model_id="fast-70b")
+
+    assert model.context == 128000
+    assert router_module.ceiling(model, status) == 6000
+
+
+def test_a_ceiling_with_neither_number_admits_anything(registry, ledger):
+    model = registry["nokey"].model("nokey-1")
+    status = ledger.status(registry["nokey"], NOW, model_id="nokey-1")
+
+    assert router_module.ceiling(model, status) == 0
+    assert router_module.fits(model, status, 10_000_000)
+
+
+def test_a_headline_limit_from_the_provider_raises_the_ceiling(registry, ledger, environ):
+    """The registry guessed 6k a minute; the account's headers say 50k, and a
+    request the registry would have turned away is now servable."""
+    ledger.observe_limit("fastcloud", "tokens:minute", 50000)
+    options = candidates(registry, ledger, now=NOW, environ=environ, min_context=10000)
+
+    assert "fastcloud" in {option.provider.name for option in options}

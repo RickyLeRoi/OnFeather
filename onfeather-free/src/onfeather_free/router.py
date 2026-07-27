@@ -75,12 +75,21 @@ def candidates(
     ledger: Ledger,
     *,
     capability: str = "chat",
+    requires: frozenset[str] | set[str] = frozenset(),
+    prefers: frozenset[str] | set[str] = frozenset(),
+    min_context: int = 0,
     strategy: str = STRATEGY_BALANCED,
     private: bool = False,
     now: datetime | None = None,
     environ: dict[str, str] | None = None,
 ) -> list[Candidate]:
-    """Every viable option, best first."""
+    """Every viable option, best first.
+
+    `requires` excludes; `prefers` only reorders. The distinction matters: a
+    model without tool calling cannot serve an agentic request at all, whereas
+    one without native schema constraint can, because the schema is emulated in
+    the prompt and checked on the way back.
+    """
     if strategy not in STRATEGIES:
         raise ValueError(f"unknown strategy {strategy!r}, expected one of {STRATEGIES}")
 
@@ -98,35 +107,72 @@ def candidates(
         for model in provider.models:
             if capability not in model.capabilities:
                 continue
+            if not set(requires) <= model.capabilities:
+                continue
             status = ledger.status(provider, moment, model_id=model.id)
             if not status.available:
+                continue
+            if min_context and not fits(model, status, min_context):
                 continue
             found.append(
                 Candidate(
                     provider=provider,
                     model=model,
                     status=status,
-                    score=_score(provider, status, strategy),
+                    score=_score(provider, model, status, strategy, prefers),
                 )
             )
 
     return sorted(found, key=lambda candidate: -candidate.score)
 
 
-def _score(provider: Provider, status: ProviderStatus, strategy: str) -> float:
+def ceiling(model: Model, status: ProviderStatus) -> int:
+    """The largest request this model will actually accept, or 0 for unknown.
+
+    Two things cap it and the smaller wins. The model's own context window is
+    the obvious one. The other is the tokens-per-minute allowance: a single
+    request cannot spend more than a window holds, so a 128k model on a tier
+    that passes 6k a minute is a 6k model. That second number is the one the
+    ledger reconciles from response headers, so this tightens or loosens itself
+    as the account's real allowance becomes known.
+    """
+    caps = [model.context] if model.context else []
+    caps += [
+        limit.effective_limit
+        for limit in status.limits
+        if limit.limit.unit == "tokens" and limit.limit.window == "minute"
+    ]
+    return min(caps) if caps else 0
+
+
+def fits(model: Model, status: ProviderStatus, needed: int) -> bool:
+    """Whether a request of `needed` tokens can be served at all. Unknown fits."""
+    limit = ceiling(model, status)
+    return not limit or needed <= limit
+
+
+def _score(
+    provider: Provider,
+    model: Model,
+    status: ProviderStatus,
+    strategy: str,
+    prefers: frozenset[str] | set[str] = frozenset(),
+) -> float:
     """Rank a candidate. Higher is better."""
     if strategy == STRATEGY_LOCAL:
-        return 1.0 if provider.local else 0.0
-
-    # 20260726 ** RG Local is unmetered, so headroom alone would wrongly rank it first.
-    if provider.local:
-        return 0.01
-
-    if strategy == STRATEGY_FAST:
+        base = 1.0 if provider.local else 0.0
+    elif provider.local:
+        # 20260726 ** RG Local is unmetered, so headroom alone would wrongly rank it first.
+        base = 0.01
+    elif strategy == STRATEGY_FAST:
         speed = 1.0 if "fast" in provider.capabilities else 0.5
         # 20260726 ** RG Headroom still contributes, so a nearly-exhausted fast provider yields to a healthy slower one.
-        return speed + status.headroom
-    return status.headroom
+        base = speed + status.headroom
+    else:
+        base = status.headroom
+
+    # 20260726 ** RG A preference outranks quota: emulation costs more than scarce quota.
+    return base + 2.0 * len(set(prefers) & model.capabilities)
 
 
 def choose(
@@ -134,6 +180,8 @@ def choose(
     ledger: Ledger,
     *,
     capability: str = "chat",
+    requires: frozenset[str] | set[str] = frozenset(),
+    min_context: int = 0,
     strategy: str = STRATEGY_BALANCED,
     private: bool = False,
     now: datetime | None = None,
@@ -144,6 +192,8 @@ def choose(
         registry,
         ledger,
         capability=capability,
+        requires=requires,
+        min_context=min_context,
         strategy=strategy,
         private=private,
         now=now,
@@ -151,7 +201,9 @@ def choose(
     )
     if not options:
         raise NoRouteAvailable(
-            _explain_empty(registry, ledger, capability, private, now, environ)
+            _explain_empty(
+                registry, ledger, capability, private, now, environ, requires, min_context
+            )
         )
 
     best = options[0]
@@ -179,6 +231,8 @@ def _explain_empty(
     private: bool,
     now: datetime | None,
     environ: dict[str, str] | None,
+    requires: frozenset[str] | set[str] = frozenset(),
+    min_context: int = 0,
 ) -> str:
     """Say which of the filters emptied the list.
 
@@ -194,12 +248,29 @@ def _explain_empty(
     if not capable:
         return f"no provider in the registry advertises the {capability!r} capability"
 
+    # 20260726 ** RG Only what the caller can actually reach explains an empty list.
+    reachable = [provider for provider in capable if provider.name in allowed]
+
+    for needed in sorted(requires):
+        if not any(provider.models_with(needed) for provider in reachable):
+            return f"no configured model supports {needed!r}"
+
+    moment = now or datetime.now(timezone.utc)
+    if min_context and not any(
+        fits(model, ledger.status(provider, moment, model_id=model.id), min_context)
+        for provider in reachable
+        for model in provider.models
+    ):
+        return (
+            f"this request is about {min_context} tokens and no configured model "
+            "accepts one that big, whether by context window or per-minute allowance"
+        )
+
     if private:
         local = [p for p in registry.local() if p.name in allowed]
         if not local:
             return "this request is marked private and no local provider is available"
 
-    moment = now or datetime.now(timezone.utc)
     resets = []
     for provider in capable:
         if provider.name not in allowed:

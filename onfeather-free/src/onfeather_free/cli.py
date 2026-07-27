@@ -8,7 +8,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import __version__, config, discovery, registry as registry_module
+from . import __version__, client as client_module, config, discovery, registry as registry_module
 from . import router as router_module
 from . import server as server_module
 from .budget import Ledger
@@ -71,6 +71,14 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--port", type=int, default=server_module.DEFAULT_PORT)
     serve.add_argument(
         "--strategy", default=router_module.STRATEGY_BALANCED, choices=router_module.STRATEGIES
+    )
+    serve.add_argument(
+        "--timeout", type=float, default=client_module.DEFAULT_TIMEOUT,
+        help="seconds to wait on a provider (default: %(default)s)",
+    )
+    serve.add_argument(
+        "--max-tokens", type=int, default=client_module.DEFAULT_MAX_TOKENS,
+        help="output ceiling for callers that send none (default: %(default)s)",
     )
     serve.add_argument("-v", "--verbose", action="store_true", help="log every request")
     serve.set_defaults(handler=_cmd_serve)
@@ -215,6 +223,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         server_module.serve(
             registry, ledger,
             host=args.host, port=args.port, strategy=args.strategy, verbose=args.verbose,
+            timeout=args.timeout, max_tokens=args.max_tokens,
         )
     except OSError as error:
         print(f"error: cannot bind {args.host}:{args.port} — {error}", file=sys.stderr)

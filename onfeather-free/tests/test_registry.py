@@ -14,7 +14,18 @@ def test_parses_providers_and_models(registry):
     assert len(registry) == 5
     provider = registry["fastcloud"]
     assert provider.label == "FastCloud"
-    assert provider.model("fast-70b").capabilities == frozenset({"chat", "fast"})
+    assert {"chat", "fast"} <= provider.model("fast-70b").capabilities
+
+
+def test_context_and_schema_dialect_are_parsed(registry):
+    assert registry["fastcloud"].model("fast-70b").context == 128000
+    assert registry["bigcontext"].schema_dialect == "openai_strict"
+
+
+def test_context_defaults_to_unknown(registry):
+    """0 means 'not recorded', which routing must read as 'do not exclude'."""
+    assert registry["nokey"].model("nokey-1").context == 0
+    assert registry["fastcloud"].schema_dialect == "openai"
 
 
 def test_unknown_provider_raises(registry):
@@ -132,3 +143,20 @@ def test_packaged_registry_has_a_local_fallback():
 def test_packaged_providers_declare_an_api_key_or_are_local():
     for provider in registry_module.load():
         assert provider.local or provider.api_key_env, provider.name
+
+
+def test_packaged_dialects_are_ones_compat_knows():
+    """A typo here would silently mean 'send the schema as written' to a provider
+    that cannot read it."""
+    from onfeather_free import compat
+
+    for provider in registry_module.load():
+        assert provider.schema_dialect in compat.DIALECTS, provider.name
+
+
+def test_packaged_tool_capable_models_declare_a_context():
+    """Routing needs a number to compare against, and 0 means 'never exclude'."""
+    for provider in registry_module.load().remote():
+        for model in provider.models:
+            if "tools" in model.capabilities:
+                assert model.context, f"{provider.name}/{model.id}"

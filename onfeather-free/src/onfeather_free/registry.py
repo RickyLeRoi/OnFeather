@@ -76,6 +76,12 @@ class Model:
     id: str
     capabilities: frozenset[str]
     limits: tuple[RateLimit, ...]
+    context: int = 0
+    """Input tokens this model will accept, or 0 when unknown.
+
+    Only ever used to rule a model *out*. An agentic client resends the whole
+    conversation every turn, so a 8k-input model is not a slower option for a
+    40k conversation, it is a guaranteed failure sixty turns in."""
 
 
 @dataclass(frozen=True)
@@ -91,6 +97,8 @@ class Provider:
     verified_at: date | None = None
     local: bool = False
     notes: str = ""
+    schema_dialect: str = "openai"
+    """Which JSON Schema subset this provider's endpoint actually accepts."""
 
     def model(self, model_id: str) -> Model | None:
         return next((model for model in self.models if model.id == model_id), None)
@@ -183,6 +191,7 @@ def _parse_provider(name: str, spec: dict) -> Provider:
         verified_at=_parse_date(spec.get("verified_at")),
         local=bool(spec.get("local", False)),
         notes=(spec.get("notes") or "").strip(),
+        schema_dialect=str(spec.get("schema_dialect") or "openai"),
     )
 
 
@@ -191,6 +200,7 @@ def _parse_model(spec: dict) -> Model:
         id=str(spec["id"]),
         capabilities=frozenset(spec.get("capabilities", [])),
         limits=tuple(RateLimit(**entry) for entry in spec.get("limits", [])),
+        context=int(spec.get("context") or 0),
     )
 
 

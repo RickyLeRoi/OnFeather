@@ -22,7 +22,8 @@ FIXTURE = {
             "models": [
                 {
                     "id": "fast-70b",
-                    "capabilities": ["chat", "fast"],
+                    "capabilities": ["chat", "fast", "tools", "json_object"],
+                    "context": 128000,
                     "limits": [
                         {"unit": "requests", "limit": 30, "window": "minute"},
                         {"unit": "requests", "limit": 1000, "window": "day",
@@ -39,10 +40,12 @@ FIXTURE = {
             "openai_compatible": True,
             "sends_rate_limit_headers": False,
             "capabilities": ["chat", "long_context"],
+            "schema_dialect": "openai_strict",
             "models": [
                 {
                     "id": "big-flash",
-                    "capabilities": ["chat", "long_context"],
+                    "capabilities": ["chat", "long_context", "tools", "json_schema"],
+                    "context": 1000000,
                     "limits": [
                         {"unit": "requests", "limit": 15, "window": "minute"},
                         {"unit": "requests", "limit": 1500, "window": "day",
@@ -76,9 +79,10 @@ FIXTURE = {
             "api_key_env": None,
             "openai_compatible": True,
             "local": True,
-            "capabilities": ["chat", "private"],
+            "capabilities": ["chat", "private", "tools"],
             "models": [
-                {"id": "qwen2.5:7b", "capabilities": ["chat", "code", "private"], "limits": []}
+                {"id": "qwen2.5:7b", "context": 32000, "limits": [],
+                 "capabilities": ["chat", "code", "private", "tools", "json_schema"]}
             ],
         },
     },

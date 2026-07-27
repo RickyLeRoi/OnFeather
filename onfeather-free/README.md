@@ -13,8 +13,9 @@ still serve it.
 
 ## Status
 
-Pre-alpha. The registry, quota ledger and router work and are tested; the
-OpenAI-compatible proxy that puts them behind a single endpoint is next.
+Pre-alpha. The registry, quota ledger, router and OpenAI-compatible endpoint
+work and are tested, including tool calling and schema-constrained answers.
+Streaming is the significant thing still missing.
 
 | Command | Status | What it does |
 |---|---|---|
@@ -152,6 +153,42 @@ Built on the standard library — no framework, no `uvicorn`, nothing to deploy.
 Streaming is not supported yet and is refused with an explicit 400 rather than a
 response a client cannot parse.
 
+### Agents, tools and schemas
+
+An agentic client is a harder customer than a chat box, and the endpoint is
+built for one. [`docs/agentic-clients.md`](docs/agentic-clients.md) is the full
+contract; the short version:
+
+- **`tools` and `tool_choice` pass through**, and only models that actually
+  support function calling are routed to. `arguments` always comes back as a
+  JSON *string* and every tool call has an `id`, whichever provider served it —
+  two things free providers differ on, both of which silently end a tool loop.
+- **`response_format: json_schema` is honoured or the attempt fails.** Providers
+  that can be constrained natively are preferred and get the schema essentially
+  as you wrote it; the rest are told in the prompt. Either way the answer is
+  validated against the schema you sent, and a mismatch fails over to the next
+  provider rather than being returned.
+- **The conversation is never truncated, summarised or reordered**, and a model
+  that cannot take it in one request is not offered the job — which on a free
+  tier is usually decided by the tokens-per-minute allowance rather than the
+  model's context window.
+- **A run stays on one model.** Handing a half-written transcript to a different
+  model mid-run is worse than waiting; see *Sessions* below.
+- **Quota exhaustion answers 429**, with `Retry-After`, because a client that
+  gets 400 gives up on a window that reopens in forty seconds.
+
+### Sessions
+
+Nothing in the OpenAI request says which run it belongs to, so a request that
+carries `tools` is fingerprinted by its opening messages: the same system prompt
+and first user message means the same run, and the run keeps the model it
+started on for half an hour of activity. Send `X-OnFeather-Session: <id>` to say
+so explicitly instead.
+
+When the pinned provider becomes unusable mid-run, the same model on another
+provider is tried before any different model, and the response says what
+happened in `X-OnFeather-Repinned`.
+
 ### Strategies
 
 | Strategy | Behaviour |
@@ -231,7 +268,13 @@ are never stranded was the one guaranteed to fail.
   of being sidelined like a 402. Distinguishing them means reading the error
   body, which is provider-specific.
 - Model pinning is parsed but not enforced: `provider/model` is accepted and then
-  routed normally.
+  routed normally. Session pinning is enforced; that is a different mechanism.
+- **`tools` and `json_schema` in the registry are guesses like everything else
+  there.** A model marked tool-capable that is not just fails the attempt and the
+  next candidate serves it, but there is no header to reconcile against the way
+  there is for quota, so a wrong flag costs a wasted request every time until
+  someone corrects the YAML. Local models are the exception: Ollama is asked
+  whether the model's prompt template renders tools, so that one is measured.
 
 ## Related
 

@@ -5,21 +5,33 @@ spent, the rate-limit headers say what the provider thinks is left, and a 429
 says the quota is gone regardless of either. Failing over to the next candidate
 is the point of the whole exercise, so a provider running out is an ordinary
 event here rather than an error.
+
+Failing over is also where an agentic caller gets hurt if this is done naively.
+Its request carries tool definitions and, sometimes, a schema the answer must
+obey; a provider that quietly ignores either returns HTTP 200 and unusable
+content. So a wrong-shaped answer counts as a failed attempt here, exactly like
+a 500, and the next candidate gets a turn.
 """
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 import httpx
 
+from . import compat
 from .budget import Ledger
-from .registry import Provider, Registry
-from .router import Candidate, Route, candidates
+from .registry import Model, Provider, Registry
+from .router import Candidate, Route, candidates, configured_providers
 
-DEFAULT_TIMEOUT = 120.0
+#: 20260726 ** RG An agentic turn with a long context takes minutes on a free tier.
+DEFAULT_TIMEOUT = 600.0
+
+#: 20260726 ** RG Callers that send no ceiling get one, and too low truncates tool calls mid-JSON.
+DEFAULT_MAX_TOKENS = 4096
 
 #: 20260726 ** RG How long to sideline a provider that returns 429 without saying when to come back.
 DEFAULT_COOLDOWN_SECONDS = 60.0
@@ -30,13 +42,43 @@ CONFIGURATION_STATUSES = frozenset({401, 402, 403})
 #: 20260726 ** RG How long a configuration failure sidelines a provider.
 CONFIGURATION_COOLDOWN_SECONDS = 900.0
 
+#: 20260726 ** RG Statuses a client should retry, per the OpenAI convention.
+RETRYABLE_STATUSES = frozenset({408, 409, 429})
+
 
 class CompletionError(Exception):
     """Raised when every candidate failed."""
 
-    def __init__(self, message: str, attempts: list[Attempt]) -> None:
+    def __init__(
+        self, message: str, attempts: list[Attempt], *, quota_exhausted: bool = False
+    ) -> None:
         super().__init__(message)
         self.attempts = attempts
+        self.quota_exhausted = quota_exhausted
+
+    @property
+    def status(self) -> int:
+        """What to answer the caller with, which decides whether it retries.
+
+        The three outcomes are genuinely different and collapsing them is how a
+        client ends up retrying a malformed request twice, or giving up on a
+        quota window that turns over in forty seconds.
+        """
+        if self.quota_exhausted or any(attempt.status == 429 for attempt in self.attempts):
+            return 429
+
+        codes = [attempt.status for attempt in self.attempts if attempt.status]
+        if codes and all(
+            400 <= code < 500
+            and code not in RETRYABLE_STATUSES
+            and code not in CONFIGURATION_STATUSES
+            for code in codes
+        ):
+            # 20260726 ** RG Every provider rejected the request: retrying changes nothing.
+            return codes[0]
+
+        # 20260726 ** RG Our own key or the upstream is at fault, not the caller's request.
+        return 503
 
 
 @dataclass
@@ -56,11 +98,17 @@ class Completion:
     tokens_in: int
     tokens_out: int
     latency_s: float
+    message: dict = field(default_factory=lambda: {"role": "assistant", "content": None})
+    finish_reason: str = "stop"
     attempts: list[Attempt] = field(default_factory=list)
 
     @property
     def failed_over(self) -> bool:
         return len(self.attempts) > 1
+
+    @property
+    def tool_calls(self) -> list[dict]:
+        return self.message.get("tool_calls") or []
 
 
 class Client:
@@ -72,11 +120,13 @@ class Client:
         ledger: Ledger,
         *,
         timeout: float = DEFAULT_TIMEOUT,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self.registry = registry
         self.ledger = ledger
         self.timeout = timeout
+        self.max_tokens = max_tokens
         self._transport = transport
 
     def complete(
@@ -88,27 +138,50 @@ class Client:
         private: bool = False,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        tools: list[dict] | None = None,
+        tool_choice: object | None = None,
+        response_format: dict | None = None,
+        min_context: int = 0,
+        prefer: tuple[str, str] | None = None,
         now: datetime | None = None,
         environ: dict | None = None,
     ) -> Completion:
         moment = now or datetime.now(timezone.utc)
+        requires = {"tools"} if tools else set()
+        prefers = {"json_schema"} if compat.schema_of(response_format) else set()
+
         options = candidates(
             self.registry,
             self.ledger,
             capability=capability,
+            requires=requires,
+            prefers=prefers,
+            min_context=min_context,
             strategy=strategy,
             private=private,
             now=moment,
             environ=environ,
         )
         if not options:
-            raise CompletionError("no provider available for this request", [])
+            raise CompletionError(
+                "no provider available for this request",
+                [],
+                quota_exhausted=self._anything_locked_out(moment, environ),
+            )
+
+        options = _honour_pin(options, prefer)
+        request = _Request(
+            messages=messages,
+            max_tokens=max_tokens if max_tokens is not None else self.max_tokens,
+            temperature=temperature,
+            tools=tools,
+            tool_choice=tool_choice,
+            response_format=response_format,
+        )
 
         attempts: list[Attempt] = []
         for option in options:
-            attempt, completion = self._try(
-                option, messages, max_tokens, temperature, environ, attempts
-            )
+            attempt, completion = self._try(option, request, environ)
             attempts.append(attempt)
             if completion is not None:
                 completion.attempts = attempts
@@ -118,24 +191,27 @@ class Client:
             f"all {len(attempts)} candidates failed; last error: {attempts[-1].error}", attempts
         )
 
+    def _anything_locked_out(self, moment: datetime, environ: dict | None = None) -> bool:
+        """Whether an empty candidate list is a quota problem or a config one.
+
+        Worth the extra query: a caller told 429 waits and retries, a caller told
+        503 for a missing API key retries twice and then reports something true.
+        """
+        configured = configured_providers(self.registry, environ)
+        return any(
+            not self.ledger.status(provider, moment).available
+            for provider in self.registry.usable()
+            if provider.name in configured
+        )
+
     # -- one provider -----------------------------------------------------
 
     def _try(
-        self,
-        option: Candidate,
-        messages: list[dict],
-        max_tokens: int | None,
-        temperature: float | None,
-        environ: dict | None,
-        attempts: list[Attempt],
+        self, option: Candidate, request: _Request, environ: dict | None
     ) -> tuple[Attempt, Completion | None]:
         provider = option.provider
         route = Route(provider, option.model, option.status, reason="")
-        payload: dict = {"model": option.model.id, "messages": messages}
-        if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
-        if temperature is not None:
-            payload["temperature"] = temperature
+        payload = request.payload_for(provider, option.model)
 
         headers = {"Content-Type": "application/json"}
         key = self._api_key(provider, environ)
@@ -153,14 +229,14 @@ class Client:
             return Attempt(provider.name, option.model.id, ok=False, error=str(error)), None
 
         latency = time.perf_counter() - started
-        outcome = self._account(route, response, latency)
+        outcome = self._account(route, response, latency, request)
 
         # 20260726 ** RG Reconciliation comes last, and the ordering is load-bearing.
         self.ledger.observe_headers(provider, dict(response.headers))
         return outcome
 
     def _account(
-        self, route: Route, response: httpx.Response, latency: float
+        self, route: Route, response: httpx.Response, latency: float, request: _Request
     ) -> tuple[Attempt, Completion | None]:
         provider, model = route.provider, route.model
 
@@ -203,24 +279,41 @@ class Client:
                 None,
             )
 
-        return self._success(route, response, latency)
+        return self._success(route, response, latency, request)
 
     def _success(
-        self, route: Route, response: httpx.Response, latency: float
+        self, route: Route, response: httpx.Response, latency: float, request: _Request
     ) -> tuple[Attempt, Completion | None]:
         provider, model = route.provider, route.model
-        try:
-            body = response.json()
-            text = body["choices"][0]["message"]["content"] or ""
-        except (ValueError, KeyError, IndexError, TypeError) as error:
+
+        def rejected(reason: str) -> tuple[Attempt, None]:
             self.ledger.record(provider.name, model=model.id, requests=1)
             return (
                 Attempt(
-                    provider.name, model.id, ok=False, status=response.status_code,
-                    error=f"unparseable response: {error}",
+                    provider.name, model.id, ok=False, status=response.status_code, error=reason
                 ),
                 None,
             )
+
+        try:
+            body = response.json()
+            choice = body["choices"][0]
+            raw_message = choice["message"]
+        except (ValueError, KeyError, IndexError, TypeError) as error:
+            return rejected(f"unparseable response: {error}")
+
+        message = compat.normalise_message(raw_message, seed=str(body.get("id") or "") or model.id)
+        problem = compat.message_problem(message)
+        if problem:
+            return rejected(problem)
+
+        schema = compat.schema_of(request.response_format)
+        if schema is not None:
+            try:
+                message = _conform(message, schema)
+            except ValueError as error:
+                # 20260726 ** RG HTTP 200 of the wrong shape is still a failure worth failing over.
+                return rejected(f"response did not match the schema: {error}")
 
         usage = body.get("usage") or {}
         tokens_in = int(usage.get("prompt_tokens") or 0)
@@ -230,15 +323,18 @@ class Client:
             provider.name, model=model.id, requests=1, tokens=tokens_in + tokens_out
         )
 
+        content = message.get("content")
         return (
             Attempt(provider.name, model.id, ok=True, status=response.status_code),
             Completion(
-                text=text,
+                text=content if isinstance(content, str) else "",
                 provider=provider,
                 model=model.id,
                 tokens_in=tokens_in,
                 tokens_out=tokens_out,
                 latency_s=latency,
+                message=message,
+                finish_reason=compat.finish_reason(message, choice.get("finish_reason")),
             ),
         )
 
@@ -264,6 +360,112 @@ class Client:
 
         source = environ if environ is not None else os.environ
         return source.get(provider.api_key_env) if provider.api_key_env else None
+
+
+@dataclass
+class _Request:
+    """One caller's request, before it is bent into a given provider's shape."""
+
+    messages: list[dict]
+    max_tokens: int | None = None
+    temperature: float | None = None
+    tools: list[dict] | None = None
+    tool_choice: object | None = None
+    response_format: dict | None = None
+
+    def payload_for(self, provider: Provider, model: Model) -> dict:
+        dialect = provider.schema_dialect
+        messages = self.messages
+        payload: dict = {"model": model.id, "messages": messages}
+
+        if self.max_tokens is not None:
+            payload["max_tokens"] = self.max_tokens
+        if self.temperature is not None:
+            payload["temperature"] = self.temperature
+
+        tools = compat.adapt_tools(self.tools, dialect)
+        if tools:
+            payload["tools"] = tools
+            if self.tool_choice is not None:
+                payload["tool_choice"] = self.tool_choice
+
+        if self.response_format is not None:
+            messages = self._apply_response_format(payload, model, dialect, messages)
+            payload["messages"] = messages
+
+        return payload
+
+    def _apply_response_format(
+        self, payload: dict, model: Model, dialect: str, messages: list[dict]
+    ) -> list[dict]:
+        """Constrain the answer natively where possible, in the prompt otherwise.
+
+        The schema is never repeated in the caller's own prompt -- sending it as
+        `response_format` is the caller saying it does not have to be -- so a
+        provider that cannot be constrained has to be told in words, or it
+        answers with a perfectly valid object of some other shape.
+        """
+        schema = compat.schema_of(self.response_format)
+        if schema is None:
+            if self.response_format.get("type") == "json_object" and (
+                {"json_schema", "json_object"} & model.capabilities
+            ):
+                payload["response_format"] = {"type": "json_object"}
+            return messages
+
+        if "json_schema" in model.capabilities:
+            payload["response_format"] = compat.adapt_response_format(
+                self.response_format, dialect
+            )
+            return messages
+
+        if "json_object" in model.capabilities:
+            payload["response_format"] = {"type": "json_object"}
+        return compat.with_instruction(messages, compat.schema_instruction(schema))
+
+
+def _conform(message: dict, schema: dict) -> dict:
+    """Make the content satisfy the schema, or say why it cannot.
+
+    Pruning before validating is deliberate. An extra key is the common failure
+    and is recoverable; a missing required key or a wrong type is not, and is
+    worth spending another candidate on.
+    """
+    content = message.get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("no content to validate")
+
+    value = compat.prune(compat.extract_json(content), schema)
+    errors = compat.validate(value, schema)
+    if errors:
+        raise ValueError("; ".join(errors[:3]))
+
+    out = dict(message)
+    out["content"] = json.dumps(value, ensure_ascii=False)
+    return out
+
+
+def _honour_pin(options: list[Candidate], prefer: tuple[str, str] | None) -> list[Candidate]:
+    """Reorder so a pinned choice is tried first, then the same model elsewhere.
+
+    An agentic run that changes model halfway is worse than one that waits: the
+    conversation so far was written by a different model, in its own style of
+    tool call, and the new one has to keep faith with it. So when the pinned pair
+    is unavailable, another provider serving the *same model id* outranks a
+    healthier provider serving a different one.
+    """
+    if not prefer:
+        return options
+    provider_name, model_id = prefer
+
+    def rank(option: Candidate) -> int:
+        if option.provider.name == provider_name and option.model.id == model_id:
+            return 0
+        if option.model.id == model_id:
+            return 1
+        return 2
+
+    return sorted(options, key=rank)
 
 
 def _configuration_hint(status: int, provider: Provider) -> str:

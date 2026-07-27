@@ -8,6 +8,19 @@
 # `verified_at` is when a human last checked the provider's published limits.
 # Pull requests updating these are the most useful contribution to this repo.
 #
+# Two model capabilities gate routing rather than merely ranking it:
+#   tools        real function calling, not "will mention the function in prose"
+#   json_schema  native constrained decoding against a supplied schema
+#   json_object  free-form JSON only; the schema is emulated in the prompt
+# `context` is what the model itself holds, and 0 means unknown. It is rarely
+# the binding constraint on a free tier: a tokens-per-minute limit caps a single
+# request just as hard, because one request cannot spend more than a window
+# allows. Groq's 70B holds 128k and its free tier passes about 6k, so routing
+# takes the smaller of the two — and since the ledger learns real limits from
+# response headers, that ceiling corrects itself where the registry is stale.
+# Either way a model that cannot hold the conversation is not a slower choice
+# for an agentic run, it is a certain failure partway through.
+#
 # One account per provider, by design. Every provider's terms permit programmatic
 # use of a free tier; all of them forbid creating multiple accounts to multiply
 # limits. The config maps each provider to exactly one credential and there is
@@ -23,17 +36,19 @@ providers:
     openai_compatible: true
     sends_rate_limit_headers: true
     verified_at: 2026-07-25
-    capabilities: [chat, fast, reasoning]
+    capabilities: [chat, fast, reasoning, tools]
     notes: Fastest free inference available. Preferred for interactive use.
     models:
       - id: llama-3.3-70b-versatile
-        capabilities: [chat, reasoning]
+        capabilities: [chat, reasoning, tools, json_schema]
+        context: 128000
         limits:
           - {unit: requests, limit: 30, window: minute, reset: rolling}
           - {unit: requests, limit: 14400, window: day, reset: utc_midnight}
           - {unit: tokens, limit: 6000, window: minute, reset: rolling}
       - id: llama-3.1-8b-instant
-        capabilities: [chat, fast]
+        capabilities: [chat, fast, tools, json_schema]
+        context: 128000
         limits:
           - {unit: requests, limit: 30, window: minute, reset: rolling}
           - {unit: requests, limit: 14400, window: day, reset: utc_midnight}
@@ -49,7 +64,7 @@ providers:
     # here stays estimated and only a 429 corrects it.
     sends_rate_limit_headers: false
     verified_at: 2026-07-26
-    capabilities: [chat, long_context, vision, reasoning]
+    capabilities: [chat, long_context, vision, reasoning, tools]
     notes: >
       Free-tier prompts may be used for model training; route private content
       elsewhere with --private. Free-tier availability is per-project: a 429
@@ -57,12 +72,14 @@ providers:
       free allowance at all, which no amount of waiting will fix.
     models:
       - id: gemini-2.0-flash
-        capabilities: [chat, long_context, vision, fast]
+        capabilities: [chat, long_context, vision, fast, tools, json_schema]
+        context: 1000000
         limits:
           - {unit: requests, limit: 15, window: minute, reset: rolling}
           - {unit: requests, limit: 1500, window: day, reset: pacific_midnight}
       - id: gemini-2.0-flash-lite
-        capabilities: [chat, fast]
+        capabilities: [chat, fast, tools, json_schema]
+        context: 1000000
         limits:
           - {unit: requests, limit: 30, window: minute, reset: rolling}
           - {unit: requests, limit: 1500, window: day, reset: pacific_midnight}
@@ -82,12 +99,14 @@ providers:
       answers 402 rather than retrying it on every request.
     models:
       - id: gpt-oss-120b
-        capabilities: [chat, reasoning]
+        capabilities: [chat, reasoning, tools, json_schema]
+        context: 65000
         limits:
           - {unit: requests, limit: 30, window: minute, reset: rolling}
           - {unit: tokens, limit: 60000, window: minute, reset: rolling}
       - id: gemma-4-31b
         capabilities: [chat, fast]
+        context: 8000
         limits:
           - {unit: requests, limit: 30, window: minute, reset: rolling}
           - {unit: tokens, limit: 60000, window: minute, reset: rolling}
@@ -99,14 +118,20 @@ providers:
     openai_compatible: true
     sends_rate_limit_headers: true
     verified_at: 2026-07-26
-    capabilities: [chat, code, reasoning]
+    capabilities: [chat, code, reasoning, tools]
+    # Backed by OpenAI's own structured outputs, which reject minimum/maximum and
+    # the other unlisted keywords under strict: true rather than ignoring them.
+    schema_dialect: openai_strict
     notes: >
       Hard per-request ceiling of 8k input / 4k output tokens. The limits below
       are a floor: this account reported 20000 requests and 2M tokens per minute
-      in its headers, and header values always win over these.
+      in its headers, and header values always win over these. That 8k input
+      ceiling rules this provider out of agentic runs, which is what `context`
+      below is for.
     models:
       - id: gpt-4o-mini
-        capabilities: [chat, code, fast]
+        capabilities: [chat, code, fast, tools, json_schema]
+        context: 8000
         limits:
           - {unit: requests, limit: 15, window: minute, reset: rolling}
           - {unit: requests, limit: 150, window: day, reset: utc_midnight}
@@ -118,19 +143,21 @@ providers:
     openai_compatible: true
     sends_rate_limit_headers: true
     verified_at: 2026-07-26
-    capabilities: [chat, code]
+    capabilities: [chat, code, tools]
     notes: >
       Spells its headers differently: x-ratelimit-remaining-req-minute rather
       than -requests. Matching only the OpenAI spelling loses this provider
       entirely, which is why headers.py parses the family.
     models:
       - id: mistral-small-latest
-        capabilities: [chat]
+        capabilities: [chat, tools, json_schema]
+        context: 32000
         limits:
           - {unit: requests, limit: 50, window: minute, reset: rolling}
           - {unit: tokens, limit: 50000, window: minute, reset: rolling}
       - id: codestral-latest
         capabilities: [code]
+        context: 32000
         limits:
           - {unit: requests, limit: 50, window: minute, reset: rolling}
           - {unit: tokens, limit: 50000, window: minute, reset: rolling}
@@ -144,20 +171,31 @@ providers:
     # contrary to what its documentation implies.
     sends_rate_limit_headers: false
     verified_at: 2026-07-26
-    capabilities: [chat, reasoning]
+    capabilities: [chat, reasoning, tools]
     notes: >
       Limits are shared across all `:free` models and enforced per IP, so this
       provider can be exhausted by something else on the same network. The `:free`
       catalogue rotates often — re-check the model ids when routing starts
-      returning 404.
+      returning 404. A `:free` suffix passes tool calls through exactly like the
+      paid counterpart, so tool support is a property of the underlying model:
+      the Llama below has it, the Gemmas were never trained for it and answer a
+      tools request with prose about the tool.
     models:
+      - id: "meta-llama/llama-3.3-70b-instruct:free"
+        capabilities: [chat, reasoning, tools, json_schema]
+        context: 128000
+        limits:
+          - {unit: requests, limit: 20, window: minute, reset: rolling}
+          - {unit: requests, limit: 200, window: day, reset: utc_midnight}
       - id: "google/gemma-4-26b-a4b-it:free"
         capabilities: [chat, fast]
+        context: 8000
         limits:
           - {unit: requests, limit: 20, window: minute, reset: rolling}
           - {unit: requests, limit: 200, window: day, reset: utc_midnight}
       - id: "google/gemma-4-31b-it:free"
         capabilities: [chat, reasoning]
+        context: 8000
         limits:
           - {unit: requests, limit: 20, window: minute, reset: rolling}
           - {unit: requests, limit: 200, window: day, reset: utc_midnight}
@@ -187,11 +225,16 @@ providers:
     sends_rate_limit_headers: false
     local: true
     verified_at: 2026-07-25
-    capabilities: [chat, code, private]
+    capabilities: [chat, code, private, tools, json_schema]
     notes: >
       Unlimited and private, but bounded by local hardware. Always last in the
       routing order except for requests flagged private, where it is first.
+      Discovered models inherit these capabilities, which overstates a model that
+      was never trained to call tools — but the alternative is a per-model table
+      of whatever the user happened to pull, and a wrong guess here costs one
+      failed attempt rather than a wrong answer.
     models:
       - id: qwen2.5:7b
-        capabilities: [chat, code, private]
+        capabilities: [chat, code, private, tools, json_schema]
+        context: 32000
         limits: []

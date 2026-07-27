@@ -7,6 +7,8 @@ can strand the user, was the only one guaranteed to 404.
 
 from __future__ import annotations
 
+import json
+
 import httpx
 
 from onfeather_free import discovery
@@ -39,7 +41,7 @@ def test_declared_models_are_replaced_by_what_the_runner_has(registry):
 def test_discovery_queries_the_models_endpoint(registry):
     transport = responder(LISTED)
     discovery.discover_local(registry, transport=transport)
-    assert transport.handler.calls == ["http://localhost:11434/v1/models"]
+    assert transport.handler.calls[0] == "http://localhost:11434/v1/models"
 
 
 def test_discovered_models_inherit_provider_capabilities(registry):
@@ -47,6 +49,75 @@ def test_discovered_models_inherit_provider_capabilities(registry):
     model = registry["ollama"].models[0]
     assert "private" in model.capabilities
     assert "chat" in model.capabilities
+
+
+# -- tool calling is asked about, not assumed -----------------------------
+
+
+def runner(templates: dict[str, str]):
+    """An Ollama that lists models and reports a prompt template for each."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        handler.calls.append(str(request.url))
+        if request.url.path.endswith("/api/show"):
+            name = json.loads(request.content)["model"]
+            return httpx.Response(200, json={"template": templates.get(name, "")})
+        return httpx.Response(200, json={"data": [{"id": name} for name in templates]})
+
+    handler.calls = []
+    return httpx.MockTransport(handler)
+
+
+def capabilities_of(registry, model_id: str) -> frozenset[str]:
+    return registry["ollama"].model(model_id).capabilities
+
+
+def test_a_model_whose_template_renders_tools_keeps_the_capability(registry):
+    transport = runner({"qwen3.6:27b": "{{ if .Tools }}...{{ end }}"})
+    discovery.discover_local(registry, transport=transport)
+
+    assert "tools" in capabilities_of(registry, "qwen3.6:27b")
+    assert "http://localhost:11434/api/show" in transport.handler.calls
+
+
+def test_a_model_without_a_tool_template_loses_it(registry):
+    """Ollama accepts a tools array for anything it holds; the model then
+    describes the function in prose, which is not an error anywhere."""
+    discovery.discover_local(registry, transport=runner({"gemma:2b": "{{ .Prompt }}"}))
+
+    assert "tools" not in capabilities_of(registry, "gemma:2b")
+    assert "chat" in capabilities_of(registry, "gemma:2b")
+
+
+def test_the_probe_only_runs_for_providers_claiming_tools(registry):
+    from dataclasses import replace
+
+    ollama = registry["ollama"]
+    registry.providers["ollama"] = replace(ollama, capabilities=frozenset({"chat", "private"}))
+    transport = runner({"gemma:2b": "{{ .Prompt }}"})
+    discovery.discover_local(registry, transport=transport)
+
+    assert not any("api/show" in call for call in transport.handler.calls)
+
+
+def test_a_runner_that_cannot_answer_the_probe_is_given_the_benefit_of_the_doubt(registry):
+    """Guessing yes costs one failed attempt; guessing no drops the model entirely."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/api/show"):
+            return httpx.Response(404, text="unknown endpoint")
+        return httpx.Response(200, json=LISTED)
+
+    discovery.discover_local(registry, transport=httpx.MockTransport(handler))
+    assert "tools" in capabilities_of(registry, "qwen3.6:27b")
+
+
+def test_a_probe_that_times_out_is_not_fatal(registry):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/api/show"):
+            raise httpx.ConnectTimeout("slow")
+        return httpx.Response(200, json=LISTED)
+
+    discovery.discover_local(registry, transport=httpx.MockTransport(handler))
+    assert "tools" in capabilities_of(registry, "qwen3.6:27b")
 
 
 def test_discovered_models_are_unmetered(registry):
