@@ -1,0 +1,23 @@
+*
+!onfeather-free/
+!onfeather-solo/
+!onfeather-tune/
+
+**/.venv/
+**/.git/
+**/.pytest_cache/
+**/.ruff_cache/
+**/__pycache__/
+**/*.py[cod]
+**/*.egg-info/
+**/build/
+**/dist/
+**/.DS_Store
+
+# 20260803 ** RG Secrets, chat exports and model weights must never reach the build context.
+**/.env
+onfeather-solo/export/
+onfeather-solo/inputs/
+**/*.gguf
+**/profiles/
+**/*.db

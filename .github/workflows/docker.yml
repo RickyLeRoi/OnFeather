@@ -1,0 +1,89 @@
+name: docker
+
+# Builds the image and publishes it to GHCR, so docker-compose.yml can pull it
+# instead of building. Pull requests build and smoke-test without publishing.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          # 20260803 ** RG metadata-action lowercases the repository name for us.
+          images: ${{ env.REGISTRY }}/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=pr
+            type=sha,format=short
+
+      # 20260803 ** RG Single-arch build first: a broken image must not reach the registry.
+      - name: Build for smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: onfeather:smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test
+        run: |
+          docker run --rm onfeather:smoke of-free --version
+          docker run --rm onfeather:smoke of-solo --version
+          docker run --rm onfeather:smoke of --version
+          # 20260803 ** RG Proves providers.yaml made it into the wheel, not just the source tree.
+          docker run --rm onfeather:smoke of-free providers > /dev/null
+          docker run --rm onfeather:smoke test -f /opt/onfeather/share/providers-docker.yaml
+          # 20260803 ** RG The server has to answer on 0.0.0.0 and write its ledger as non-root.
+          docker run -d --name onfeather-smoke -p 4141:4141 onfeather:smoke
+          for _ in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:4141/health && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:4141/health
+          docker rm -f onfeather-smoke
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

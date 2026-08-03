@@ -1,0 +1,10 @@
+.DS_Store
+.pytest_cache/
+.ruff_cache/
+
+# 20260803 ** RG Compose reads this for API keys; it must stay local.
+.env
+
+# 20260803 ** RG Default mount point for GGUF weights; the empty dir stays so the bind mount resolves.
+models/*
+!models/.gitkeep
