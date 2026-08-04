@@ -180,7 +180,7 @@ send.
 
 ### Home Assistant
 
-[`onfeather-hass`](../onfeather-hass) turns this endpoint into an Assist
+[The Home Assistant integration](../HASS.md) turns this endpoint into an Assist
 conversation agent plus quota sensors — the same thing Ollama's integration
 does, with the free-tier accounting Ollama has no need for.
 

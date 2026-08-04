@@ -1,14 +1,10 @@
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-asyncio_mode = "auto"
-
-[tool.ruff]
+# 20260804 ++ RG #HASS Scoped to the integration; the three tools carry their own config.
 line-length = 100
 src = ["custom_components", "tests"]
 
-[tool.ruff.lint]
+[lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
-[tool.ruff.lint.isort]
+[lint.isort]
 # 20260804 ++ RG #HASS Home Assistant's convention: core and custom components are first-party.
 known-first-party = ["homeassistant", "custom_components", "tests"]

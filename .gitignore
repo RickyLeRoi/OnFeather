@@ -1,10 +1,13 @@
 .DS_Store
 .pytest_cache/
 .ruff_cache/
+.venv/
+__pycache__/
+*.py[cod]
 
-# 20260803 ** RG Compose reads this for API keys; it must stay local.
+# 20260803 ++ RG #Docker Compose reads this for API keys; it must stay local.
 .env
 
-# 20260803 ** RG Default mount point for GGUF weights; the empty dir stays so the bind mount resolves.
+# 20260803 ++ RG #Docker Default mount point for GGUF weights; the dir stays for the bind mount.
 models/*
 !models/.gitkeep

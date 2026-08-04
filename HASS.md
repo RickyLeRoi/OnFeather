@@ -1,6 +1,9 @@
-# onfeather-hass
+# OnFeather for Home Assistant
 
-Home Assistant integration for [OnFeather](https://github.com/RickyLeRoi/OnFeather).
+The integration lives in [`custom_components/onfeather/`](custom_components/onfeather/),
+at the root of this repository rather than in a folder beside the three tools.
+That is HACS's requirement, not a preference: it looks for
+`ROOT_OF_THE_REPO/custom_components/` and takes no path.
 
 Ollama gives Home Assistant a conversation entity. This does the same, plus the
 part Ollama has no reason to have: free-tier quota. Assist talks to `of-free`,
@@ -64,7 +67,9 @@ The router says which of the two it is doing on start-up.
 Copy `custom_components/onfeather` into your Home Assistant `config/custom_components/`,
 restart, then **Settings → Devices & services → Add integration → OnFeather**.
 
-Or add this repository to HACS as a custom repository of type *Integration*.
+Or add `RickyLeRoi/OnFeather` to HACS as a custom repository of type
+*Integration*. HACS will show this repository's own README as the description —
+the price of one repository holding four projects.
 
 ## Configuring the agent
 
@@ -109,15 +114,21 @@ integration rather than this one.
 Home Assistant 2026.7 requires **Python 3.14**, so the test harness will not
 install on anything older:
 
+From the repository root, where `pytest.ini` scopes the run to `tests/` so the
+three tools' own suites stay out of it:
+
 ```sh
 python3.14 -m venv .venv
-.venv/bin/pip install pytest-homeassistant-custom-component==0.13.348
+.venv/bin/pip install -r requirements-test.txt
 .venv/bin/python -m pytest
+.venv/bin/ruff check custom_components tests
 ```
 
-That version pins `homeassistant==2026.7.4`. Bump both together — the harness
-tracks HA release for release, and a mismatch fails at import rather than
-politely.
+The harness pins `homeassistant==2026.7.4` and tracks HA release for release, so
+bump both together. `hassil` and `home-assistant-intents` are in there because
+the `conversation` component declares them as its own runtime requirements,
+which means pip never installs them and the import fails only once a test
+touches the conversation entity.
 
 ## Licence
 

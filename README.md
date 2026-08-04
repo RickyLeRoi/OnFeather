@@ -40,7 +40,7 @@ you can edit in any editor and put in git.
 
 → [README](onfeather-solo/README.md) · [SECURITY](onfeather-solo/SECURITY.md)
 
-## [onfeather-hass](onfeather-hass/) — Home Assistant
+## [custom_components/onfeather](custom_components/onfeather/) — Home Assistant
 
 **Assist, answered by whichever free tier still has quota.**
 
@@ -50,7 +50,10 @@ one would go, how much quota is left and which providers are still missing a
 key. Ollama's integration gives you the first of those; the rest is what a free
 tier makes necessary.
 
-→ [README](onfeather-hass/README.md)
+It sits at the repository root rather than in a folder of its own, because HACS
+only looks for `custom_components/` there.
+
+→ [HASS.md](HASS.md)
 
 ## Docker
 

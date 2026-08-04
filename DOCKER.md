@@ -64,10 +64,10 @@ ports:
 
 ## Home Assistant
 
-The [`onfeather-hass`](onfeather-hass/) integration is not in this image and
-cannot be: it is a Home Assistant custom integration, loaded by Home Assistant
-from its own `config/custom_components/` directory, in whatever container or VM
-Home Assistant runs in. Nothing about it executes here.
+The [Home Assistant integration](HASS.md) is not in this image and cannot be: it
+is loaded by Home Assistant from its own `config/custom_components/` directory,
+in whatever container or VM Home Assistant runs in. Nothing about it executes
+here, and `.dockerignore` keeps `custom_components/` out of the build context.
 
 What this image has to do for it is the section above — be reachable, and want a
 key.

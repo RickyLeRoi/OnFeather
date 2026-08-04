@@ -82,10 +82,10 @@ being seen. If a proposal describes someone else, reject it.
 ## Verifying the claim yourself
 
 ```bash
-# 20260726 ** RG Should refuse before reading the input file, exit code 2.
+# 20260725 RG Should refuse before reading the input file, exit code 2.
 of-solo learn chat.json --base-url https://api.openai.com/v1
 
-# 20260726 ** RG See exactly what would be sent, contacting nothing.
+# 20260725 RG See exactly what would be sent, contacting nothing.
 of-solo learn chat.json --dry-run
 ```
 

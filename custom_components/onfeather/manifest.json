@@ -4,7 +4,7 @@
   "codeowners": ["@RickyLeRoi"],
   "config_flow": true,
   "dependencies": ["conversation"],
-  "documentation": "https://github.com/RickyLeRoi/OnFeather/tree/main/onfeather-hass",
+  "documentation": "https://github.com/RickyLeRoi/OnFeather/blob/main/HASS.md",
   "integration_type": "service",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/RickyLeRoi/OnFeather/issues",

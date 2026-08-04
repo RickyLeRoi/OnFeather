@@ -1,0 +1,8 @@
+# 20260804 ++ RG #HASS Pins homeassistant==2026.7.4; bump both together.
+pytest-homeassistant-custom-component==0.13.348
+
+# 20260804 ++ RG #HASS The `conversation` component declares these itself, so pip never pulls them.
+hassil==3.8.0
+home-assistant-intents==2026.6.24
+
+ruff

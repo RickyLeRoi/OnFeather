@@ -10,7 +10,7 @@ dist/
 *.db
 .env
 
-# 20260726 ** RG Real chat exports and anything derived from them.
+# 20260725 RG Real chat exports and anything derived from them.
 export/
 inputs/
 *_chat*.txt
