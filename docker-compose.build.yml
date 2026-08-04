@@ -1,8 +1,4 @@
-# Overlay that builds the image from this checkout instead of pulling it:
-#
-#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
-#
-# Set SOLO_EXTRAS=embeddings to include lancedb + sentence-transformers (~2 GB).
+# 20260803 ++ RG #Docker Overlay that builds from this checkout instead of pulling.
 
 x-build: &build
   context: .

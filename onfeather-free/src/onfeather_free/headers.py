@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-#: 20260726 ** RG x-ratelimit-<kind>-<unit>[-<window>]
+#: 20260725 RG x-ratelimit-<kind>-<unit>[-<window>]
 _PATTERN = re.compile(
     r"^x-ratelimit-"
     r"(?P<kind>remaining|limit|reset|renewalperiod)-"
@@ -32,7 +32,7 @@ _PATTERN = re.compile(
 _UNITS = {"request": "requests", "requests": "requests", "req": "requests",
           "token": "tokens", "tokens": "tokens"}
 
-#: 20260726 ** RG Duration strings like Groq's "2m52.8s" or "194ms".
+#: 20260725 RG Durations like Groq's "2m52.8s" or "194ms".
 _DURATION = re.compile(r"(?P<value>[\d.]+)(?P<unit>ms|s|m|h|d)")
 _DURATION_SECONDS = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0}
 
@@ -85,7 +85,7 @@ def parse(headers: dict[str, str]) -> RateLimitHeaders:
             if seconds is not None:
                 result.reset_seconds[unit] = seconds
         elif kind == "renewalperiod":
-            # 20260726 ** RG A renewal period *is* the window, stated in seconds.
+            # 20260725 RG A renewal period is the window, in seconds.
             seconds = parse_duration(raw_value)
             if seconds:
                 result.window.setdefault(unit, window_for_seconds(seconds))

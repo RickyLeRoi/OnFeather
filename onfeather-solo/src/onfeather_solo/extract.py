@@ -23,20 +23,17 @@ from .ingest import Chunk, Input
 from .memory import TYPES, Memory, create
 from .netguard import EgressBlocked, local_client
 
-# 20260726 ** RG Ollama's own endpoint: fewer moving parts than routing via of-free.
+# 20260725 RG Ollama's own endpoint: fewer moving parts than routing via of-free.
 DEFAULT_BASE_URL = "http://127.0.0.1:11434/v1"
-# 20260726 ** RG A general instruct build, not a -coder one: on the same chunk the
-# coder sibling translated a game title, flipped two polarities between identical
-# runs at temperature 0, and proposed three facts the prompt asks it to skip.
+# 20260725 RG Instruct, not -coder: the coder sibling flipped polarities at temperature 0.
 DEFAULT_MODEL = "qwen3.5:9b"
-# 20260726 ** RG Wide enough for the default model: a 9B measured over 420s on a
-# single chunk here, so a 300s budget would fail every chunk before it answered.
+# 20260725 RG A 9B measured 420s on one chunk here, so 300s would fail every chunk.
 DEFAULT_TIMEOUT = 900.0
 
-# 20260726 ** RG Below this a proposal is noise; still stored, but ranked low.
+# 20260725 RG Below this a proposal is noise; stored, but ranked low.
 MIN_CONFIDENCE = 0.1
 
-# 20260726 ** RG A wrong model or a short timeout must not burn a night one chunk at a time.
+# 20260725 RG A wrong model must not burn a night one chunk at a time.
 MAX_CONSECUTIVE_FAILURES = 3
 
 PROMPT = """\
@@ -79,7 +76,6 @@ class Extraction:
     chunks_read: int = 0
     chunks_failed: int = 0
     raw_proposals: int = 0
-    # 20260726 ** RG "N chunks failed" without the reason is an unactionable report.
     failures: list[str] = field(default_factory=list)
     gave_up: bool = False
 
@@ -127,7 +123,7 @@ class Extractor:
                 result.failures.append(str(error))
                 consecutive += 1
                 if consecutive >= MAX_CONSECUTIVE_FAILURES:
-                    # 20260726 ** RG Nothing is working; stop rather than repeat it 1000 times.
+                    # 20260725 RG Nothing is working; stop rather than repeat it 1000 times.
                     result.gave_up = True
                     break
                 continue
@@ -153,14 +149,14 @@ class Extractor:
         payload = {
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
-            # 20260726 ** RG Deterministic: the same export should extract the same facts.
+            # 20260725 RG Deterministic: the same export should extract the same facts.
             "temperature": 0,
         }
         try:
             with local_client(timeout=self.timeout, inner=self._transport) as client:
                 response = client.post(f"{self.base_url}/chat/completions", json=payload)
         except EgressBlocked:
-            # 20260726 ** RG Never downgrade this to a warning and continue.
+            # 20260725 RG Never downgrade this to a warning and continue.
             raise
         except httpx.HTTPError as error:
             raise ExtractionError(f"cannot reach the local model: {error}") from error
@@ -208,7 +204,7 @@ def _as_memory(entry: dict, source: Input) -> Memory | None:
 
     kind = str(entry.get("type") or "fact").strip().lower()
     if kind not in TYPES:
-        # 20260726 ** RG Unknown type is a model slip, not a reason to lose the fact.
+        # 20260725 RG Unknown type is a model slip, not a reason to lose the fact.
         kind = "fact"
 
     try:

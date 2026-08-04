@@ -36,7 +36,7 @@ def live(registry, environ, monkeypatch):
     router.client = Client(registry, ledger, transport=upstream(ok))
 
     server = build(router, "127.0.0.1", 0)
-    # 20260726 ** RG Default 0.5s poll makes shutdown dominate the suite runtime.
+    # 20260725 RG The 0.5s default poll makes shutdown dominate the suite.
     thread = threading.Thread(target=lambda: server.serve_forever(poll_interval=0.01), daemon=True)
     thread.start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
@@ -67,7 +67,7 @@ def test_models_lists_auto_and_every_routable_pair(live):
 
     assert ids[0] == "auto"
     assert "fastcloud/fast-70b" in ids
-    # Not OpenAI-compatible, so never routable.
+    # 20260725 RG Not OpenAI-compatible, so never routable.
     assert not any(entry.startswith("legacy/") for entry in ids)
 
 
@@ -388,7 +388,7 @@ def test_solo_counts_are_absent_when_the_store_is(live, monkeypatch):
 
 
 def test_solo_counts_appear_once_the_store_exists(live, monkeypatch, tmp_path):
-    # 20260804 ** RG Separate repos: of-solo is only importable where both are installed.
+    # 20260804 ++ RG #HASS Separate repos: of-solo imports only where both are installed.
     pytest.importorskip("onfeather_solo")
 
     base, _ = live

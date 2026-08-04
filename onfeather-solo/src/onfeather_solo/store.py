@@ -18,7 +18,7 @@ from .memory import (
 
 DEFAULT_ROOT = Path.home() / ".onfeather" / "solo"
 
-# 20260726 ** RG Status is a directory, so `git log` and `ls` both stay useful.
+# 20260725 RG Status is a directory, so `git log` and `ls` both stay useful.
 DIRECTORIES = {
     STATUS_PROPOSED: "proposed",
     STATUS_CONFIRMED: "confirmed",
@@ -49,7 +49,6 @@ class Store:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(memory.to_markdown(), encoding="utf-8")
 
-        # 20260726 ** RG Status change moves the file; drop the old copy.
         if memory.path and memory.path.resolve() != target.resolve() and memory.path.exists():
             memory.path.unlink()
         memory.path = target
@@ -82,7 +81,7 @@ class Store:
                 memory = self._read(path)
                 if memory is None:
                     continue
-                # 20260726 ** RG Directory wins: a hand-moved file is a decision.
+                # 20260725 RG Directory wins: a hand-moved file is a decision.
                 memory.status = status
                 found.append(memory)
         return found
@@ -122,7 +121,7 @@ class Store:
         try:
             return parse(path.read_text(encoding="utf-8"), path=path)
         except (OSError, MemoryError_):
-            # 20260726 ** RG A malformed file must not break the whole store.
+            # 20260725 RG A malformed file must not break the whole store.
             return None
 
     # -- search -----------------------------------------------------------
@@ -160,7 +159,6 @@ def _score(memory: Memory, terms: list[str]) -> float:
         if term in words:
             score += 1.0
         elif term in haystack:
-            # 20260726 ** RG Substring counts less than a whole word.
             score += 0.4
-    # 20260726 ** RG Weight by confidence so shaky memories rank lower.
+    # 20260725 RG Weight by confidence so shaky memories rank lower.
     return score * memory.confidence

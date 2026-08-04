@@ -1,22 +1,7 @@
 name: onfeather
 
-# Pulls the published image from GHCR — no local build needed:
-#
-#   cp .env.example .env      # fill in whatever API keys you have
-#   docker compose up -d      # starts the router on http://localhost:4141
-#
-# The other two tools are one-shot commands against the same image:
-#
-#   docker compose run --rm solo of-solo add "..." --type fact
-#   docker compose run --rm tune of --version
-#
-# To build from this checkout instead of pulling:
-#
-#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
-#
-# There is deliberately no `build:` key here — with one, Compose builds whenever
-# the image is missing locally rather than pulling it, which is the opposite of
-# what this file is for.
+# 20260803 ++ RG #Docker Usage is in DOCKER.md.
+# 20260803 ++ RG #Docker No `build:` key on purpose: it would build instead of pulling.
 
 x-onfeather: &onfeather
   image: ${ONFEATHER_IMAGE:-ghcr.io/rickyleroi/onfeather}:${ONFEATHER_TAG:-latest}
@@ -26,11 +11,10 @@ x-onfeather: &onfeather
   volumes:
     - onfeather-data:/data
   extra_hosts:
-    # 20260803 ** RG Lets the container reach an Ollama running on the host, on Linux too.
+    # 20260803 ++ RG #Docker Reaches an Ollama on the host, on Linux too.
     - "host.docker.internal:host-gateway"
 
 services:
-  # The OpenAI-compatible router. Point any OpenAI client at http://localhost:4141/v1.
   free:
     <<: *onfeather
     container_name: onfeather-free
@@ -56,18 +40,12 @@ services:
       start_period: 5s
       retries: 3
 
-  # Second brain. Memories land in the shared volume under /data/.onfeather/solo.
   solo:
     <<: *onfeather
     profiles: ["tools"]
     command: ["of-solo", "--help"]
 
-  # Offload planner. Mount your GGUF files into /models and pass paths from there.
-  #
-  # `of probe` measures the machine it runs on, which here is the container: on
-  # macOS and Windows that is the Docker VM, not your hardware, and the plan it
-  # produces is wrong. Probe on the host and pass the result with
-  # `--profile /data/profile.json`, or run onfeather-tune natively.
+  # 20260803 ++ RG #Docker On macOS and Windows `of probe` measures the Docker VM, not your machine.
   tune:
     <<: *onfeather
     profiles: ["tools"]
@@ -75,7 +53,7 @@ services:
     volumes:
       - onfeather-data:/data
       - ${ONFEATHER_MODELS_DIR:-./models}:/models:ro
-    # 20260803 ** RG Uncomment on a Linux host with the NVIDIA Container Toolkit to let the probe see the GPU.
+    # 20260803 ++ RG #Docker Uncomment on Linux with the NVIDIA Container Toolkit to expose the GPU.
     # deploy:
     #   resources:
     #     reservations:

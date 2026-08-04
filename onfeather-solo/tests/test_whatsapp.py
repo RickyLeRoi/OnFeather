@@ -153,7 +153,7 @@ def test_noise_is_dropped_from_the_input_document():
         "[13/11/19, 15:19:00] 💻 Riccardo: <Media omitted>\n"
         "[13/11/19, 15:20:00] Marco: ci vediamo dopo"
     )
-    # 20260726 ** RG min_chars=0: this asserts noise filtering, not the length default.
+    # 20260725 RG min_chars=0: this asserts noise filtering, not the length default.
     document = whatsapp.to_input(parse_export(export), subject="Riccardo", min_chars=0)
     assert len(document["items"]) == 2
 

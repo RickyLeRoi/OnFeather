@@ -30,7 +30,7 @@ from onfeather_tune.gguf import GGUFError, TensorInfo, TensorRole
         ("blk.0.ffn_down.weight", TensorRole.FFN_DENSE),
         ("blk.0.ffn_gate.weight", TensorRole.FFN_DENSE),
         ("rope_freqs.weight", TensorRole.OTHER),
-        # 20260726 ** RG Real gemma4 names, unknown to this parser.
+        # 20260725 RG Real gemma4 names, unknown to this parser.
         ("blk.0.proj.weight", TensorRole.BLOCK_OTHER),
         ("blk.0.inp_gate.weight", TensorRole.BLOCK_OTHER),
         ("blk.41.layer_output_scale.weight", TensorRole.BLOCK_OTHER),
@@ -95,7 +95,7 @@ def test_shared_experts_are_hot_and_routed_experts_are_not():
 
 def test_n_bytes_for_q4_k():
     tensor = TensorInfo("blk.0.attn_q.weight", (2048, 4096), type_id=12, offset=0)
-    # 20260726 ** RG 8_388_608 elements / 256 per block * 144 bytes per block
+    # 20260725 RG 8_388_608 elements / 256 per block * 144 bytes per block.
     assert tensor.n_elements == 8_388_608
     assert tensor.n_bytes == 8_388_608 // 256 * 144
 
@@ -205,7 +205,7 @@ def test_large_arrays_are_skipped_not_materialised():
     model = gguf.read(build_gguf(metadata, moe_tensors()))
 
     assert model.metadata["tokenizer.ggml.tokens"] == f"<{len(vocab)} elements omitted>"
-    # 20260726 ** RG Parsing must still land in the right place afterwards.
+    # 20260725 RG Parsing must still land in the right place afterwards.
     assert len(model.tensors) == 23
 
 
@@ -220,10 +220,10 @@ def test_reads_big_endian_files():
     """v3 permits big-endian; endianness is inferred from the version field."""
     stream = build_gguf(moe_metadata(), [])
     payload = bytearray(stream.getvalue())
-    payload[4:8] = struct.pack(">I", 3)  # 20260726 ** RG byte-swap the version
+    payload[4:8] = struct.pack(">I", 3)  # 20260725 RG Byte-swap the version.
     from io import BytesIO
 
-    # 20260726 ** RG Only the version is swapped here, so parsing the rest would fail; assert the detection itself.
+    # 20260725 RG Only the version is swapped, so the rest would fail to parse.
     with pytest.raises(GGUFError):
         gguf.read(BytesIO(bytes(payload)))
 

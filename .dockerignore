@@ -14,7 +14,7 @@
 **/dist/
 **/.DS_Store
 
-# 20260803 ** RG Secrets, chat exports and model weights must never reach the build context.
+# 20260803 ++ RG #Docker Secrets, chat exports and model weights must never reach the context.
 **/.env
 onfeather-solo/export/
 onfeather-solo/inputs/

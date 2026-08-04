@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-#: 20260726 ** RG Searched in order; the first match wins, and an already-exported environment variable always beats.
+#: 20260725 RG First match wins; an exported variable beats the file.
 SEARCH_PATHS = (
     Path.cwd() / ".env",
     Path.home() / ".onfeather" / ".env",
@@ -67,7 +67,7 @@ def load_env(path: str | Path | None = None, *, environ: dict | None = None) -> 
         for key, value in values.items():
             target.setdefault(key, value)
         applied.append(candidate)
-        break  # 20260726 ** RG first file wins
+        break
     return applied
 
 

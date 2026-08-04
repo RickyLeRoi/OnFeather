@@ -35,25 +35,22 @@ from .router import STRATEGY_BALANCED, candidates, configured_providers
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 4141
 
-# 20260804 ** RG Reachable without a key: the container healthcheck has none to send.
+# 20260804 ++ RG #HASS The container healthcheck sends no key.
 PUBLIC_PATHS = frozenset({"/health", "/healthz"})
 
-# 20260804 ** RG Unset means no authentication at all, which is the loopback default.
+# 20260804 ++ RG #HASS Unset means no authentication, the loopback default.
 API_KEY_ENV = "ONFEATHER_API_KEY"
 
-# 20260726 ** RG Requests naming these get routed locally, whatever the strategy.
+# 20260725 RG Routed locally whatever the strategy.
 PRIVATE_MODEL_ALIASES = frozenset({"private", "local"})
 
-# 20260726 ** RG Virtual model names meaning "you choose".
 AUTO_MODEL_ALIASES = frozenset({"auto", "onfeather", "of-free", ""})
 
-# 20260726 ** RG Header a caller can send to pin a run explicitly instead of being fingerprinted.
+# 20260725 RG Pin a run explicitly instead of being fingerprinted.
 SESSION_HEADER = "X-OnFeather-Session"
 
-# 20260726 ** RG How long a run may pause before its model pin is forgotten.
 SESSION_TTL_SECONDS = 1800.0
 
-# 20260726 ** RG Rough tokens-per-character, only ever used to rule a model out.
 CHARS_PER_TOKEN = 4
 
 
@@ -175,7 +172,7 @@ class Router:
         self.verbose = verbose
         self.api_key = api_key or None
         self.sessions = Sessions()
-        # 20260804 ** RG Rebound whole under the GIL, so worker threads need no lock.
+        # 20260804 ++ RG #HASS Rebound whole under the GIL; worker threads need no lock.
         self.last: Served | None = None
 
     def models(self) -> list[dict]:
@@ -208,7 +205,7 @@ class Router:
             provider_name = name.split("/", 1)[0]
             if provider_name in self.registry.providers:
                 return "chat", False, provider_name
-        # 20260726 ** RG Unknown name: route it anyway rather than refusing.
+        # 20260725 RG Unknown name: route it rather than refuse.
         return "chat", False, None
 
     def retry_after(self) -> int | None:
@@ -223,7 +220,7 @@ class Router:
 
 
 class Handler(BaseHTTPRequestHandler):
-    router: Router  # 20260726 ** RG Injected by serve().
+    router: Router
 
     protocol_version = "HTTP/1.1"
     server_version = "onfeather-free"
@@ -277,7 +274,7 @@ class Handler(BaseHTTPRequestHandler):
         return bool(offered) and hmac.compare_digest(offered, expected)
 
     def _unauthorised(self) -> None:
-        # 20260804 ** RG Drain the body first, or keep-alive reads it as the next request.
+        # 20260804 ++ RG #HASS Drain the body, or keep-alive reads it as the next request.
         self._read_json()
         self._error(
             401,
@@ -336,7 +333,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if payload.get("stream"):
-            # 20260726 ** RG Streaming needs upstream passthrough; not built yet.
+            # 20260725 RG Streaming needs upstream passthrough; not built.
             self._error(
                 400,
                 "streaming is not supported yet; retry with \"stream\": false",
@@ -377,7 +374,6 @@ class Handler(BaseHTTPRequestHandler):
             latency_s=result.latency_s,
         )
         headers = {
-            # 20260726 ** RG Expose the choice so callers can see what served them.
             "X-OnFeather-Provider": result.provider.name,
             "X-OnFeather-Model": result.model,
             "X-OnFeather-Failovers": len(result.attempts) - 1,
@@ -385,7 +381,7 @@ class Handler(BaseHTTPRequestHandler):
         if key:
             headers["X-OnFeather-Session"] = key
         if pin and pin[1] != result.model:
-            # 20260726 ** RG The pinned model became unusable and the run changed hands mid-flight.
+            # 20260725 RG The pinned model became unusable mid-flight.
             headers["X-OnFeather-Repinned"] = f"{pin[0]}/{pin[1]}"
 
         self._send(200, _as_openai_response(result), extra=headers)
@@ -407,7 +403,6 @@ class Handler(BaseHTTPRequestHandler):
         elif status >= 500:
             self._error(status, message, "no_route", code="upstream_unavailable")
         else:
-            # 20260726 ** RG Every provider rejected the request: say so and let the caller stop.
             self._error(status, message, "invalid_request_error", code="upstream_rejected")
 
     def _status_payload(self) -> dict:
@@ -420,7 +415,7 @@ class Handler(BaseHTTPRequestHandler):
             providers.append({
                 "name": provider.name,
                 "label": provider.label,
-                # 20260804 ** RG An unconfigured provider still reads as full headroom.
+                # 20260804 ++ RG #HASS An unconfigured provider still reads as full headroom.
                 "configured": provider.name in configured,
                 "api_key_env": provider.api_key_env,
                 "available": state.available,
@@ -457,7 +452,7 @@ class Handler(BaseHTTPRequestHandler):
             "current": last.as_dict() if last else None,
         }
 
-        # 20260804 ** RG Absent rather than zeroed when of-solo is not installed or never used.
+        # 20260804 ++ RG #HASS Absent, not zeroed, when of-solo is unused.
         solo = companions.solo_counts()
         if solo is not None:
             payload["solo"] = solo
@@ -521,10 +516,10 @@ def serve(
     print(f"  tool calling: {len(candidates(registry, ledger, requires={'tools'}))} pairs")
     print(f"  auth: {'API key required' if api_key else 'open'}")
     if not api_key and host not in ("127.0.0.1", "localhost", "::1"):
-        # 20260804 ** RG Bound off loopback with no key: anyone on the network can spend the quota.
+        # 20260804 ++ RG #HASS Off loopback with no key: anyone can spend the quota.
         print(f"    warning: reachable from the network — set {API_KEY_ENV} to require a key")
     print("\n  export OPENAI_BASE_URL=http://%s:%d/v1" % (host, port))
-    # 20260804 ** RG Named, not printed: this line ends up in docker logs.
+    # 20260804 ++ RG #HASS Named, not printed: this reaches docker logs.
     print(f"  export OPENAI_API_KEY={'$' + API_KEY_ENV if api_key else 'unused'}\n")
     try:
         server.serve_forever()

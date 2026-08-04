@@ -1,12 +1,10 @@
 # syntax=docker/dockerfile:1
 
-# One image, three tools. They share a Python runtime and a data directory, and
-# splitting them into three images would triple the pull for no isolation that
-# matters: none of them is a network service except `of-free serve`.
+# 20260803 ++ RG #Docker One image, three tools: only `of-free serve` listens on a socket.
 
 FROM python:3.12-slim AS builder
 
-# 20260803 ** RG Set to `embeddings` to pull in lancedb + sentence-transformers (adds ~2 GB).
+# 20260803 ++ RG #Docker `embeddings` pulls in lancedb + sentence-transformers (~2 GB).
 ARG SOLO_EXTRAS=""
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -24,7 +22,7 @@ RUN /opt/onfeather/bin/pip install \
         /src/onfeather-free \
         "/src/onfeather-solo${SOLO_EXTRAS:+[$SOLO_EXTRAS]}"
 
-# 20260803 ** RG Ollama lives on the host, so `localhost` inside the container points at nothing.
+# 20260803 ++ RG #Docker Ollama lives on the host; `localhost` in the container points at nothing.
 RUN set -eu; \
     packaged="$(/opt/onfeather/bin/python -c 'import onfeather_free, pathlib; print(pathlib.Path(onfeather_free.__file__).parent / "providers.yaml")')"; \
     mkdir -p /opt/onfeather/share; \
@@ -40,7 +38,7 @@ LABEL org.opencontainers.image.title="OnFeather" \
       org.opencontainers.image.source="https://github.com/RickyLeRoi/OnFeather" \
       org.opencontainers.image.licenses="Apache-2.0"
 
-# 20260803 ** RG uid 1000 so a bind-mounted /data stays writable on a normal Linux host.
+# 20260803 ++ RG #Docker uid 1000 keeps a bind-mounted /data writable on a Linux host.
 RUN useradd --create-home --home-dir /data --uid 1000 onfeather \
  && mkdir -p /models \
  && chown onfeather:onfeather /models
@@ -55,10 +53,10 @@ ENV PATH="/opt/onfeather/bin:$PATH" \
 USER onfeather
 WORKDIR /data
 
-# 20260803 ** RG Ledger and memories live under $HOME/.onfeather; GGUF files are mounted read-only.
+# 20260803 ++ RG #Docker Ledger and memories live under $HOME/.onfeather.
 VOLUME ["/data", "/models"]
 
 EXPOSE 4141
 
-# 20260803 ** RG No ENTRYPOINT: `docker run <image> of-solo list` has to reach the other two tools.
+# 20260803 ++ RG #Docker No ENTRYPOINT: `docker run <image> of-solo list` must reach all three tools.
 CMD ["of-free", "serve", "--host", "0.0.0.0", "--port", "4141"]

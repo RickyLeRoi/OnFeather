@@ -27,22 +27,19 @@ from .budget import Ledger
 from .registry import Model, Provider, Registry
 from .router import Candidate, Route, candidates, configured_providers
 
-#: 20260726 ** RG An agentic turn with a long context takes minutes on a free tier.
+#: 20260725 RG An agentic turn on a free tier takes minutes.
 DEFAULT_TIMEOUT = 600.0
 
-#: 20260726 ** RG Callers that send no ceiling get one, and too low truncates tool calls mid-JSON.
+#: 20260725 RG Too low truncates tool calls mid-JSON.
 DEFAULT_MAX_TOKENS = 4096
 
-#: 20260726 ** RG How long to sideline a provider that returns 429 without saying when to come back.
+#: 20260725 RG For a 429 that does not say when to come back.
 DEFAULT_COOLDOWN_SECONDS = 60.0
 
-#: 20260726 ** RG Account cannot use this provider at all; waiting does not fix it.
 CONFIGURATION_STATUSES = frozenset({401, 402, 403})
 
-#: 20260726 ** RG How long a configuration failure sidelines a provider.
 CONFIGURATION_COOLDOWN_SECONDS = 900.0
 
-#: 20260726 ** RG Statuses a client should retry, per the OpenAI convention.
 RETRYABLE_STATUSES = frozenset({408, 409, 429})
 
 
@@ -74,10 +71,8 @@ class CompletionError(Exception):
             and code not in CONFIGURATION_STATUSES
             for code in codes
         ):
-            # 20260726 ** RG Every provider rejected the request: retrying changes nothing.
             return codes[0]
 
-        # 20260726 ** RG Our own key or the upstream is at fault, not the caller's request.
         return 503
 
 
@@ -225,13 +220,13 @@ class Client:
                     _join(provider.base_url, "chat/completions"), json=payload, headers=headers
                 )
         except httpx.HTTPError as error:
-            # 20260726 ** RG Unreachable is not a quota problem: do not charge the budget.
+            # 20260725 RG Unreachable is not a quota problem; do not charge the budget.
             return Attempt(provider.name, option.model.id, ok=False, error=str(error)), None
 
         latency = time.perf_counter() - started
         outcome = self._account(route, response, latency, request)
 
-        # 20260726 ** RG Reconciliation comes last, and the ordering is load-bearing.
+        # 20260725 RG Ordering is load-bearing: reconcile last.
         self.ledger.observe_headers(provider, dict(response.headers))
         return outcome
 
@@ -248,7 +243,7 @@ class Client:
             )
 
         if response.status_code in CONFIGURATION_STATUSES:
-            # 20260726 ** RG Config problem, not quota: Cerebras 402s without a free tier.
+            # 20260725 RG Config problem, not quota: Cerebras 402s without a free tier.
             self.ledger.lock_out(
                 provider.name,
                 until=time.time() + CONFIGURATION_COOLDOWN_SECONDS,
@@ -266,7 +261,6 @@ class Client:
             )
 
         if response.status_code >= 400:
-            # 20260726 ** RG Still a request the provider counted against us.
             self.ledger.record(provider.name, model=model.id, requests=1)
             return (
                 Attempt(
@@ -312,7 +306,7 @@ class Client:
             try:
                 message = _conform(message, schema)
             except ValueError as error:
-                # 20260726 ** RG HTTP 200 of the wrong shape is still a failure worth failing over.
+                # 20260725 RG HTTP 200 of the wrong shape is still worth failing over.
                 return rejected(f"response did not match the schema: {error}")
 
         usage = body.get("usage") or {}

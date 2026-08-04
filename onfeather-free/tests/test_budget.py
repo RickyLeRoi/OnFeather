@@ -23,7 +23,7 @@ def test_usage_outside_the_window_is_forgotten(ledger):
     ledger.record("fastcloud", requests=2, at=NOW.timestamp())
 
     assert ledger.used("fastcloud", MINUTE, NOW) == 2
-    # 20260726 ** RG The same events still count against the daily window.
+    # 20260725 RG Still inside the daily window.
     assert ledger.used("fastcloud", DAY, NOW) == 7
 
 
@@ -88,7 +88,7 @@ def test_observe_headers_parses_standard_names(registry, ledger):
     assert recorded == 2
 
     status = ledger.status(provider, NOW, model_id="fast-70b")
-    # 20260726 ** RG Two request windows here; the header maps onto the tighter one.
+    # 20260725 RG Two request windows; the header maps onto the tighter one.
     by_key = {limit.limit.key: limit for limit in status.limits}
     assert by_key["requests:minute"].authoritative
     assert by_key["requests:minute"].remaining == 17
@@ -143,7 +143,7 @@ def test_status_uses_the_tightest_limit_for_headroom(registry, ledger):
     ledger.record("fastcloud", requests=27, at=NOW.timestamp())
     status = ledger.status(registry["fastcloud"], NOW)
 
-    # 20260726 ** RG 3 of 30 per-minute requests left = 10%, well below the daily headroom.
+    # 20260725 RG 3 of 30 per minute is 10%, below the daily headroom.
     assert status.headroom == 3 / 30
 
 
@@ -173,7 +173,7 @@ def test_provider_rollup_uses_the_loosest_limit_across_models(registry, ledger):
     rollup = ledger.status(provider, NOW)
     assert [limit.limit.limit for limit in rollup.limits] == [1500]
 
-    # 20260726 ** RG Naming a model still reports that model's own limit.
+    # 20260725 RG Naming a model reports that model's own limit.
     flagship = ledger.status(provider, NOW, model_id="flagship")
     assert [limit.limit.limit for limit in flagship.limits] == [50]
 

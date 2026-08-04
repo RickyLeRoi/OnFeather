@@ -10,20 +10,19 @@ MANUFACTURER = "OnFeather"
 DEFAULT_URL = "http://localhost:4141"
 DEFAULT_TIMEOUT = 120.0
 
-# 20260804 ** RG The router's own virtual model: let it choose per request.
+# 20260804 ++ RG #HASS The router's virtual model: let it choose per request.
 DEFAULT_MODEL = "auto"
 
-# 20260804 ** RG Turns kept before the oldest are dropped; free tiers have small windows.
+# 20260804 ++ RG #HASS Free tiers have small context windows.
 CONF_MAX_HISTORY = "max_history"
 DEFAULT_MAX_HISTORY = 20
 
-# 20260804 ** RG The ledger only moves when a request is served, so polling hard buys nothing.
+# 20260804 ++ RG #HASS The ledger only moves when a request is served.
 UPDATE_INTERVAL = timedelta(seconds=30)
 
-# 20260804 ** RG Ceiling on tool round trips, so a confused model cannot loop forever.
 MAX_TOOL_ITERATIONS = 10
 
-# 20260804 ** RG Pins a run to one model, so a conversation is not handed to a stranger mid-way.
+# 20260804 ++ RG #HASS Pins a run to one model, so it is not handed to a stranger mid-way.
 SESSION_HEADER = "X-OnFeather-Session"
 
 DEVICE_FREE = "free"

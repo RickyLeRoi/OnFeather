@@ -227,7 +227,7 @@ def _render(profile: HardwareProfile) -> str:
     row("Cores", f"{profile.cpu.physical_cores} physical / {profile.cpu.logical_cores} logical")
     allowed = profile.cpu.usable_cores
     if allowed and profile.cpu.physical_cores and allowed < profile.cpu.physical_cores:
-        # 20260726 ** RG Only worth saying when it contradicts the line above.
+        # 20260725 RG Only worth saying when it contradicts the line above.
         row("Usable", f"{allowed}  (restricted — this is a container)")
     row("ISA", ", ".join(profile.cpu.isa) or "not detected")
 
@@ -263,7 +263,7 @@ def _render(profile: HardwareProfile) -> str:
     return "\n".join(lines)
 
 
-#: 20260726 ** RG Context used for the KV estimate when the caller does not say.
+#: 20260725 RG Context for the KV estimate when the caller does not say.
 DEFAULT_CONTEXT = 8192
 
 

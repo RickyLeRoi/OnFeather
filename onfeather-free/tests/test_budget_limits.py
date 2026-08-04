@@ -64,7 +64,7 @@ def test_headroom_uses_the_observed_limit(ledger):
 
     status = ledger.status(provider, NOW, model_id="m")
     assert 0.0 <= status.headroom <= 1.0
-    # 20260726 ** RG 999/1000 and 11939/12000 are both healthy; the registry's 6000-token ceiling would have reported.
+    # 20260725 RG Both counts are healthy; the 6000-token ceiling is what excludes it.
     assert status.headroom > 0.9
 
 

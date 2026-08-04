@@ -16,21 +16,13 @@ from .store import DEFAULT_ROOT, Store
 
 FORMATS = ("auto", "whatsapp", "telegram")
 
-# 20260727 ** RG A full Telegram export holds every chat you have ever opened,
-# most of them a handful of messages with a bot. Converting all of them writes
-# hundreds of files nobody will ever learn from; the subject's own message count
-# is the cheapest signal for which ones are worth the compute.
+# 20260725 RG An export holds every chat ever opened; message count is the cheapest filter.
 DEFAULT_MIN_MESSAGES = 20
 
-# 20260726 ** RG Measured over 12 chunks through a 7B Q4 on the CPU-only calibration
-# host: 712s. A single-chunk sample reads 112s because model load dominates it.
-# Generation is most of the marginal cost, so it varies with how much the model
-# decides to write, and scales with model size.
+# 20260725 RG 712s over 12 chunks on a 7B Q4; one chunk reads 112s because load dominates.
 SECONDS_PER_CHUNK_7B = 60
 
-# 20260726 ** RG Ollama serves a 4096-token window by default whatever the model
-# supports, and shifts overflow out of context instead of erroring — so an
-# oversized chunk loses its instructions silently and extracts nonsense.
+# 20260725 RG Ollama serves 4096 tokens by default and shifts overflow out silently.
 SAFE_CHUNK_CHARS = 6000
 
 
@@ -215,7 +207,7 @@ def _detect_format(path: Path) -> str:
         with path.open(encoding="utf-8", errors="replace") as handle:
             head = handle.read(4096)
     except OSError:
-        # 20260727 ** RG Let the adapter report the read error, with its filename.
+        # 20260725 RG Let the adapter report the read error, with its filename.
         return "whatsapp"
 
     stripped = head.lstrip("﻿ \t\r\n")
@@ -273,8 +265,7 @@ def _cmd_import(args: argparse.Namespace) -> int:
             print(f"  {path.name}: {error}", file=sys.stderr)
             continue
 
-        # 20260727 ** RG Only a multi-chat file gets filtered: asking for one chat
-        # and being handed nothing because it fell under a threshold is a bug report.
+        # 20260725 RG Only multi-chat files get filtered; one chat returning nothing is a bug.
         crowded = len(pieces) > 1
 
         for stem, document, parsed in pieces:
@@ -292,9 +283,7 @@ def _cmd_import(args: argparse.Namespace) -> int:
                               encoding="utf-8")
 
             chars = sum(len(item["text"]) for item in document["items"])
-            # 20260726 ** RG Chunk for real rather than dividing characters: each rendered
-            # line also carries "[date author]", which the raw count cannot see and which
-            # undercounted a 4M-character corpus by 78%.
+            # 20260725 RG Chunk for real: the "[date author]" prefix undercounted a corpus 78%.
             chunks = len(ingest.chunk(ingest.from_dict(document)))
             note = "" if spoken else "   SUBJECT NEVER SPEAKS HERE"
             print(f"  {target.name:<26}{kept:>6}/{parsed} msgs {chars:>8} chars "
@@ -338,7 +327,7 @@ def _list_authors(paths: list[Path], fmt: str = "auto") -> int:
             continue
 
         print(f"\n{path.name}  ({where})", file=sys.stderr)
-        # 20260727 ** RG A full export has thousands of authors; the subject is at the top.
+        # 20260725 RG Thousands of authors in a full export; the subject is at the top.
         for author, count in counts.most_common(20):
             print(f"  {count:>6}  {author}", file=sys.stderr)
         if len(counts) > 20:
@@ -348,7 +337,7 @@ def _list_authors(paths: list[Path], fmt: str = "auto") -> int:
 
 
 def _cmd_learn(args: argparse.Namespace) -> int:
-    # 20260726 ** RG Check egress before reading a byte of private material.
+    # 20260725 RG Check egress before reading a byte of private material.
     try:
         pinned = assert_local(args.base_url)
     except EgressBlocked as error:
@@ -395,8 +384,7 @@ def _cmd_learn(args: argparse.Namespace) -> int:
         added = 0
 
         def keep(index: int, memories: list, total: int = len(chunks)) -> None:
-            # 20260726 ** RG Write as we go. A 16-hour file held in memory until the
-            # end loses everything to one interruption, and these runs are overnight.
+            # 20260725 RG Write as we go: a 16-hour run in memory dies with one interruption.
             nonlocal added
             added += sum(int(store.add(memory)[1]) for memory in memories)
             print(f"  {index}/{total} chunks, {added} new", file=sys.stderr, flush=True)
@@ -415,7 +403,6 @@ def _cmd_learn(args: argparse.Namespace) -> int:
         print(f"  {result.chunks_read}/{len(chunks)} chunks, "
               f"{result.raw_proposals} proposals, {added} new", file=sys.stderr)
 
-        # 20260726 ** RG Say why, distinctly: the count alone diagnoses nothing.
         for reason in list(dict.fromkeys(result.failures))[:3]:
             print(f"  ! {reason}", file=sys.stderr)
         if result.gave_up:

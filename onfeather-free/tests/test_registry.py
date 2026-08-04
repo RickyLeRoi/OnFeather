@@ -97,13 +97,14 @@ def test_pacific_window_uses_provider_timezone():
 
     assert start.tzinfo == PACIFIC
     assert (start.hour, start.minute) == (0, 0)
-    # 20260726 ** RG 12:00 UTC is 05:00 Pacific, so the window began earlier the same UTC day.
+    # 20260725 RG 12:00 UTC is 05:00 Pacific: the window began earlier the same day.
     assert start < NOW
     assert start.astimezone(timezone.utc).date() == NOW.date()
 
 
 def test_pacific_and_utc_windows_disagree_before_pacific_midnight():
-    early = datetime(2026, 7, 25, 3, 0, tzinfo=timezone.utc)  # 20260726 ** RG 20:00 Pacific, previous day
+    # 20260725 RG 20:00 Pacific, previous day.
+    early = datetime(2026, 7, 25, 3, 0, tzinfo=timezone.utc)
     utc = RateLimit(unit="requests", limit=1, window="day", reset="utc_midnight")
     pacific = RateLimit(unit="requests", limit=1, window="day", reset="pacific_midnight")
 

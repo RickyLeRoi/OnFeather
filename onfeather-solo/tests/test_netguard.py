@@ -25,9 +25,9 @@ def test_loopback_addresses_are_recognised(host):
     "host",
     [
         "8.8.8.8",
-        "192.168.1.10",          # 20260726 ** RG LAN is not this machine.
+        "192.168.1.10",          # 20260725 RG LAN is not this machine.
         "10.0.0.1",
-        "169.254.169.254",       # 20260726 ** RG Cloud metadata endpoint.
+        "169.254.169.254",       # 20260725 RG Cloud metadata endpoint.
         "0.0.0.0",
         "2001:4860:4860::8888",
         "fd00::1",

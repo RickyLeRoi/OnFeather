@@ -15,7 +15,7 @@ from . import OnFeatherConfigEntry
 from .const import DEVICE_FREE
 from .entity import OnFeatherEntity
 
-# 20260804 ** RG No device class: it would override "Ready/None" with "Connected/Disconnected".
+# 20260804 ++ RG #HASS A device class would override "Ready/None" with "Connected".
 DESCRIPTION = BinarySensorEntityDescription(
     key="providers_configured",
     translation_key="providers_configured",
@@ -61,7 +61,7 @@ class OnFeatherProvidersConfigured(OnFeatherEntity, BinarySensorEntity):
                 entry["name"]: {
                     "label": entry.get("label"),
                     "configured": bool(entry.get("configured")),
-                    # 20260804 ** RG The variable's name, never its value.
+                    # 20260804 ++ RG #HASS The variable's name, never its value.
                     "api_key_env": entry.get("api_key_env"),
                     "local": entry.get("local"),
                 }

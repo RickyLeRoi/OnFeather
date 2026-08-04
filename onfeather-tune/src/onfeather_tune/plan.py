@@ -22,10 +22,10 @@ from .estimate import DecodeEstimate, decode_estimate, kv_cache_bytes
 from .gguf import HOT_ROLES, GGUFModel, TensorRole
 from .model import HardwareProfile
 
-#: 20260726 ** RG VRAM needed beyond weights and KV cache: compute buffers, context, fragmentation.
+#: 20260725 RG VRAM beyond weights and KV cache: compute buffers, context, fragmentation.
 DEFAULT_RESERVE_BYTES = 512 * 1024**2
 
-#: 20260726 ** RG Expert tensor types, in the order we are willing to give them up.
+#: 20260725 RG Expert tensor types, in the order we give them up.
 EXPERT_SURRENDER_ORDER = ("gate", "up", "down")
 
 
@@ -33,9 +33,7 @@ class PlanError(Exception):
     """Raised when no viable plan exists for the requested configuration."""
 
 
-# 20260727 ** RG Below this share of per-token traffic coming from RAM, the
-# bandwidth model stops describing reality: measured 1.45x optimistic at 26%
-# and 2.16x at 10%, against an exact prediction when everything streams.
+# 20260725 RG Below this share of RAM traffic the bandwidth model breaks: 1.45x at 26%.
 RAM_BOUND_FLOOR = 0.30
 
 
@@ -186,7 +184,7 @@ def make_plan(
     expert_bytes = model.routed_expert_bytes
     bandwidth = profile.memory.bandwidth_multi_gbs
 
-    # 20260726 ** RG Nothing fits: run on CPU and stop pretending the GPU helps decoding.
+    # 20260725 RG Nothing fits: run on CPU and stop pretending the GPU helps decoding.
     if available <= 0 or hot_bytes + kv_bytes > available:
         plan = Plan(
             model=model,
@@ -301,5 +299,5 @@ def _gib(value: int) -> str:
     return f"{value / 1024**3:.2f} GiB"
 
 
-# 20260726 ** RG Re-exported so callers can reason about placement without importing gguf.
+# 20260725 RG Re-exported so callers reason about placement without importing gguf.
 __all__ = ["Plan", "PlanError", "make_plan", "summarise", "HOT_ROLES", "TensorRole"]

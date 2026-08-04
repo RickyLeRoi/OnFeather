@@ -89,7 +89,7 @@ def test_tensor_names_and_shapes_survive_the_round_trip(reference_file):
     tensors = {t.name: t for t in of_gguf.read(reference_file).tensors}
 
     assert len(tensors) == 2 + 2 * 6
-    # 20260726 ** RG GGUF stores dimensions in reverse of NumPy's order.
+    # 20260725 RG GGUF stores dimensions in reverse of NumPy's order.
     assert tensors["token_embd.weight"].dimensions == (256, 512)
     assert tensors["blk.0.ffn_gate_exps.weight"].dimensions == (256, 128, 64)
     assert tensors["blk.0.ffn_gate_exps.weight"].role is TensorRole.ROUTED_EXPERTS
@@ -104,10 +104,10 @@ def test_computed_sizes_match_the_real_file(reference_file):
     model = of_gguf.read(reference_file)
 
     for tensor in model.tensors:
-        expected = tensor.n_elements * 4  # 20260726 ** RG every tensor written as F32
+        expected = tensor.n_elements * 4
         assert tensor.n_bytes == expected, tensor.name
 
-    # 20260726 ** RG Header, tensor table and data must account for the whole file.
+    # 20260725 RG Header, tensor table and data must account for the whole file.
     assert model.data_offset + model.total_bytes == os.path.getsize(reference_file)
 
 

@@ -34,7 +34,6 @@ LOOPBACK_NETWORKS = (
     ipaddress.ip_network("::1/128"),
 )
 
-# 20260726 ** RG Only these schemes carry a body we care about.
 ALLOWED_SCHEMES = frozenset({"http", "https"})
 
 
@@ -74,7 +73,7 @@ def resolve_loopback(host: str) -> str:
         raise EgressBlocked(
             f"{host!r} resolves to non-loopback address(es): {', '.join(offending)}"
         )
-    # 20260726 ** RG Prefer IPv4 for the widest local-server compatibility.
+    # 20260725 RG Prefer IPv4 for the widest local-server compatibility.
     return sorted(addresses, key=lambda a: ":" in a)[0]
 
 
@@ -110,7 +109,7 @@ class LoopbackOnlyTransport(httpx.BaseTransport):
 
         address = resolve_loopback(host)
         if address != host:
-            # 20260726 ** RG Pin to the checked address; never resolve twice.
+            # 20260725 RG Pin to the checked address; never resolve twice.
             request.url = request.url.copy_with(host=address)
             request.headers["Host"] = host
 

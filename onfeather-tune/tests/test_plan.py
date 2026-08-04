@@ -125,7 +125,7 @@ def test_override_pattern_targets_only_routed_experts(model):
 
     compiled = re.compile(expression)
     assert compiled.search("blk.7.ffn_gate_exps.weight")
-    # 20260726 ** RG The two that must never match: shared experts and the router run on every token, so offloading.
+    # 20260725 RG Shared experts and the router run on every token.
     assert not compiled.search("blk.7.ffn_gate_shexp.weight")
     assert not compiled.search("blk.7.ffn_gate_inp.weight")
     assert not compiled.search("blk.7.attn_q.weight")

@@ -36,14 +36,10 @@ from .common import DEFAULT_MIN_CHARS, AdapterError, normalise_author
 
 KIND_MESSAGE = "message"
 
-# 20260727 ** RG A message that is only a URL extracts into confident nonsense.
-# On a 1548-message group export, 268 messages were nothing but a link — and 267
-# of those cleared the 30-character threshold, so the length filter kept every
-# one of them. The longest was 145 characters of pure URL. Messages pairing a
-# link with a comment (168 of them there) are unaffected.
+# 20260725 RG A URL-only message extracts into nonsense and clears the length filter.
 LINK = re.compile(r"(?:https?://|www\.|t\.me/)\S+", re.IGNORECASE)
 
-# 20260727 ** RG Chats a full export carries beside the ones you still belong to.
+# 20260725 RG Chats an export carries beside the ones you still belong to.
 CHAT_COLLECTIONS = ("chats", "left_chats")
 
 
@@ -87,7 +83,7 @@ class Chat:
         so the chat name is the only thing that distinguishes the outputs."""
         text = re.sub(r"[^a-z0-9]+", "-", normalise_author(self.name).lower()).strip("-")
         if not text:
-            # 20260727 ** RG Non-latin names slugify to nothing; the id still identifies it.
+            # 20260725 RG Non-latin names slugify to nothing; the id still identifies it.
             return f"chat-{self.id}" if self.id is not None else "chat"
         return text[:60]
 
@@ -120,7 +116,7 @@ def flatten(value: object) -> str:
 
 def parse_message(raw: dict) -> Message:
     kind = str(raw.get("type") or KIND_MESSAGE)
-    # 20260727 ** RG Service entries name an `actor`; ordinary ones a `from`.
+    # 20260725 RG Service entries name an `actor`; ordinary ones a `from`.
     author = raw.get("from") if kind == KIND_MESSAGE else raw.get("actor")
 
     text = flatten(raw.get("text"))
@@ -153,7 +149,7 @@ def _timestamp(raw: dict) -> datetime | None:
     try:
         return datetime.fromtimestamp(int(epoch))  # type: ignore[arg-type]
     except (TypeError, ValueError):
-        # 20260727 ** RG Bad date loses the time, not the message.
+        # 20260725 RG Bad date loses the time, not the message.
         return None
 
 

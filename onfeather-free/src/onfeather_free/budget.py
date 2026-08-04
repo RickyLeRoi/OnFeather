@@ -117,7 +117,7 @@ class ProviderStatus:
         if self.locked_until is not None:
             return 0.0
         if not self.limits:
-            return 1.0  # 20260726 ** RG Unmetered, like a local model.
+            return 1.0
         return min(
             (status.remaining / status.effective_limit if status.effective_limit else 0.0)
             for status in self.limits
@@ -131,7 +131,7 @@ class Ledger:
         self.path = str(path)
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        # 20260726 ** RG Server handles requests on threads; guard the connection with a lock.
+        # 20260725 RG sqlite3 refuses a connection shared across threads.
         self._connection = sqlite3.connect(self.path, check_same_thread=False)
         self._lock = threading.Lock()
         with self._lock:
@@ -249,7 +249,7 @@ class Ledger:
             if rate_limit.unit == unit
         ]
         if not declared:
-            # 20260726 ** RG The provider meters something the registry does not know about.
+            # 20260725 RG The provider meters something the registry does not list.
             return f"{unit}:{window}" if window else None
 
         if window:
@@ -303,7 +303,6 @@ class Ledger:
         if observation is not None:
             remaining_at_observation, observed_at = observation
             if observed_at >= window_start:
-                # 20260726 ** RG The provider's number, minus whatever we have spent since.
                 spent_since = self._sum_since(provider, rate_limit.unit, observed_at)
                 remaining = max(remaining_at_observation - spent_since, 0)
                 return LimitStatus(

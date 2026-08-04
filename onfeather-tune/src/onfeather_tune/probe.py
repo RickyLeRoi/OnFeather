@@ -21,7 +21,7 @@ import psutil
 from . import bench
 from .model import SCHEMA_VERSION, CpuInfo, GpuInfo, HardwareProfile, MemoryInfo, PlatformInfo
 
-# 20260726 ** RG ISA extensions llama.cpp actually branches on when picking kernels.
+# 20260725 RG ISA extensions llama.cpp branches on when picking kernels.
 INTERESTING_ISA = {
     "avx", "avx2", "avx512f", "avx512bw", "avx512vl", "avx512dq", "avx512_vnni",
     "avx512_bf16", "amx_tile", "amx_int8", "amx_bf16", "f16c", "fma", "neon",
@@ -69,7 +69,7 @@ def usable_cores() -> int | None:
     rather than the exotic one.
     """
     limits = []
-    # 20260726 ** RG macOS and Windows expose no affinity mask.
+    # 20260725 RG macOS and Windows expose no affinity mask.
     with contextlib.suppress(AttributeError, OSError):
         limits.append(len(os.sched_getaffinity(0)))
     quota = _cgroup_cpu_quota()
@@ -110,7 +110,7 @@ def _cgroup_memory_limit() -> int | None:
             value = int(raw)
         except ValueError:
             continue
-        # 20260726 ** RG cgroup v1 writes a sentinel near 2^63 to mean unlimited.
+        # 20260725 RG cgroup v1 writes a sentinel near 2^63 to mean unlimited.
         if 0 < value < 2**62:
             return value
     return None
@@ -148,7 +148,7 @@ def _cpu_isa() -> set[str]:
             pass
 
     elif system == "Darwin":
-        # 20260726 ** RG Intel Macs expose one feature string; Apple Silicon one sysctl each.
+        # 20260725 RG Intel Macs expose one feature string; Apple Silicon one sysctl each.
         for key in ("machdep.cpu.features", "machdep.cpu.leaf7_features"):
             out = _run(["sysctl", "-n", key])
             if out:
@@ -161,7 +161,7 @@ def _cpu_isa() -> set[str]:
                     flags.add(match.group(1).lower().replace("feat_", ""))
 
     elif system == "Windows":
-        # 20260726 ** RG No cheap flag dump on Windows; the planner assumes the baseline.
+        # 20260725 RG No cheap flag dump on Windows; the planner assumes the baseline.
         pass
 
     return {flag for flag in flags if flag in INTERESTING_ISA}
@@ -173,15 +173,14 @@ def detect_memory(*, measure: bool = True, threads: int | None = None) -> Memory
 
     limit = _cgroup_memory_limit()
     if limit and limit < total:
-        # 20260726 ** RG Report what this process can have, not what the host owns.
+        # 20260725 RG Report what this process can have, not what the host owns.
         total, available = limit, min(available, limit)
 
     info = MemoryInfo(total_bytes=total, available_bytes=available, limit_bytes=limit)
     if measure:
         physical = psutil.cpu_count(logical=False) or 1
         allowed = usable_cores()
-        # 20260726 ** RG Never benchmark with more threads than we are entitled to:
-        # 128 threads on an 18-core share measured 25 GB/s where 18 measured 74.5.
+        # 20260725 RG Never exceed our thread entitlement: 128 on an 18-core share got 25 GB/s.
         worker_count = threads or (min(physical, allowed) if allowed else physical)
         info.bandwidth_single_gbs = round(bench.measure_single_thread(), 2)
         info.bandwidth_multi_gbs = round(bench.measure_multi_thread(worker_count), 2)
@@ -262,7 +261,7 @@ def _apple_gpus() -> list[GpuInfo]:
         name = entry.get("sppci_model", "Apple GPU")
         dedicated = entry.get("spdisplays_vram")
         shared = entry.get("spdisplays_vram_shared")
-        # 20260726 ** RG Apple Silicon shares VRAM: the GPU addresses system RAM directly.
+        # 20260725 RG Apple Silicon shares VRAM: the GPU addresses system RAM directly.
         if dedicated:
             total_bytes, unified = _parse_apple_vram(dedicated), False
         elif shared:

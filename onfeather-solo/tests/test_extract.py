@@ -295,8 +295,8 @@ def test_a_remote_base_url_is_blocked_before_any_request():
     "url",
     [
         "https://api.groq.com/openai/v1",
-        "http://192.168.1.50:11434/v1",     # 20260726 ** RG LAN box.
-        "http://169.254.169.254/v1",        # 20260726 ** RG Cloud metadata.
+        "http://192.168.1.50:11434/v1",     # 20260725 RG LAN box.
+        "http://169.254.169.254/v1",        # 20260725 RG Cloud metadata.
         "http://8.8.8.8/v1",
     ],
 )

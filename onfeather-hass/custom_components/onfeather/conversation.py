@@ -57,7 +57,7 @@ class OnFeatherConversationEntity(
 
     _attr_has_entity_name = True
     _attr_name = None
-    # 20260804 ** RG The router answers in one piece; there is nothing to stream.
+    # 20260804 ++ RG #HASS The router answers in one piece; nothing to stream.
     _attr_supports_streaming = False
 
     def __init__(self, entry: OnFeatherConfigEntry) -> None:
@@ -148,7 +148,7 @@ def _assistant_message(response: dict[str, Any]) -> dict[str, Any]:
         raise HomeAssistantError("OnFeather returned no message")
 
     if not message.get("content") and not message.get("tool_calls"):
-        # 20260804 ** RG Naming the model beats the chat log's generic "unable to get response".
+        # 20260804 ++ RG #HASS Naming the model beats the chat log's generic failure.
         served = response.get("model") or "the model"
         reason = (choices[0].get("finish_reason") or "no reason given") if choices else ""
         raise HomeAssistantError(f"{served} returned an empty answer ({reason})")
@@ -191,7 +191,7 @@ def _to_tool_input(call: dict[str, Any]) -> llm.ToolInput:
         "tool_name": function.get("name") or "",
         "tool_args": arguments,
     }
-    # 20260804 ** RG Keep the upstream id: it is what pairs the result back to the call.
+    # 20260804 ++ RG #HASS Keep the upstream id: it pairs the result back to the call.
     if call_id := call.get("id"):
         fields["id"] = call_id
     return llm.ToolInput(**fields)

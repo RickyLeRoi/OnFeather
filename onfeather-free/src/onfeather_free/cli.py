@@ -99,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def _open(args: argparse.Namespace) -> tuple[Registry, Ledger]:
     registry = registry_module.load(args.registry)
-    # 20260726 ** RG Local model lists are per-machine; ask the runner, do not guess.
+    # 20260725 RG Local model lists are per-machine; ask the runner.
     discovery.discover_local(registry)
     return registry, Ledger(args.ledger)
 
@@ -224,7 +224,7 @@ def _cmd_route(args: argparse.Namespace) -> int:
 
 def _cmd_serve(args: argparse.Namespace) -> int:
     registry, ledger = _open(args)
-    # 20260804 ** RG Env first so the key never has to appear in a process listing.
+    # 20260804 ++ RG #HASS Env first, so the key stays out of the process listing.
     api_key = args.api_key or os.environ.get(server_module.API_KEY_ENV)
     try:
         server_module.serve(

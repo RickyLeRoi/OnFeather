@@ -138,7 +138,7 @@ def test_serialisation_includes_populated_fields():
     text = create("x", source="chat", confidence=0.5, tags=["b", "a"]).to_markdown()
     assert "source: chat" in text
     assert "confidence: 0.5" in text
-    # 20260726 ** RG Tags sorted so the file does not churn between writes.
+    # 20260725 RG Tags sorted so the file does not churn between writes.
     assert text.index("- a") < text.index("- b")
 
 

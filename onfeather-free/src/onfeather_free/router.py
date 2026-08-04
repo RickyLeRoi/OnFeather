@@ -15,11 +15,11 @@ from datetime import datetime, timezone
 from .budget import Ledger, ProviderStatus
 from .registry import Model, Provider, Registry
 
-#: 20260726 ** RG Spread load to preserve the scarcest quota.
+#: 20260725 RG Spread load to preserve the scarcest quota.
 STRATEGY_BALANCED = "balanced"
-#: 20260726 ** RG Prefer providers advertising low latency, spending fast quota first.
+#: 20260725 RG Prefer low latency, spending fast quota first.
 STRATEGY_FAST = "fast"
-#: 20260726 ** RG Never leave the machine.
+#: 20260725 RG Never leave the machine.
 STRATEGY_LOCAL = "local"
 
 STRATEGIES = (STRATEGY_BALANCED, STRATEGY_FAST, STRATEGY_LOCAL)
@@ -162,16 +162,15 @@ def _score(
     if strategy == STRATEGY_LOCAL:
         base = 1.0 if provider.local else 0.0
     elif provider.local:
-        # 20260726 ** RG Local is unmetered, so headroom alone would wrongly rank it first.
+        # 20260725 RG Local is unmetered; headroom alone would rank it first.
         base = 0.01
     elif strategy == STRATEGY_FAST:
         speed = 1.0 if "fast" in provider.capabilities else 0.5
-        # 20260726 ** RG Headroom still contributes, so a nearly-exhausted fast provider yields to a healthy slower one.
         base = speed + status.headroom
     else:
         base = status.headroom
 
-    # 20260726 ** RG A preference outranks quota: emulation costs more than scarce quota.
+    # 20260725 RG Emulation costs more than scarce quota.
     return base + 2.0 * len(set(prefers) & model.capabilities)
 
 
@@ -248,7 +247,6 @@ def _explain_empty(
     if not capable:
         return f"no provider in the registry advertises the {capability!r} capability"
 
-    # 20260726 ** RG Only what the caller can actually reach explains an empty list.
     reachable = [provider for provider in capable if provider.name in allowed]
 
     for needed in sorted(requires):

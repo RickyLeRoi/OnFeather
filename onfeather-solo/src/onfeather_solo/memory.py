@@ -10,7 +10,6 @@ from pathlib import Path
 
 import yaml
 
-# 20260726 ** RG Markdown+frontmatter is the de facto standard for agent memory.
 FRONTMATTER = re.compile(r"^---\s*\n(?P<yaml>.*?)\n---\s*\n?(?P<body>.*)\Z", re.DOTALL)
 
 STATUS_PROPOSED = "proposed"
@@ -72,8 +71,7 @@ class Memory:
         self.updated = _today()
 
     def to_markdown(self) -> str:
-        # 20260726 ** RG Dates as strings: sharing one date object makes PyYAML
-        # 20260726 ** RG emit an anchor (&id001/*id001), which is valid but hostile to hand-editing.
+        # 20260725 RG Dates as strings: a shared date object makes PyYAML emit an anchor.
         meta = {
             "id": self.id,
             "type": self.type,

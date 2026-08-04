@@ -8,7 +8,7 @@ import pytest
 
 from onfeather_free import compat
 
-# 20260726 ** RG The shape AutoHeal actually sends: draft-07, strict, nullable as a union.
+# 20260725 RG What AutoHeal sends: draft-07, strict, nullable as a union.
 HEAL_SCHEMA = {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
@@ -64,7 +64,7 @@ def test_strict_dialect_drops_the_keywords_openai_rejects():
 
     assert "minimum" not in adapted["properties"]["confidence"]
     assert "maximum" not in adapted["properties"]["confidence"]
-    # 20260726 ** RG Dropped constraints are still enforced on the way back.
+    # 20260725 RG Dropped constraints are still enforced on the way back.
     assert compat.validate({"confidence": 4}, HEAL_SCHEMA["properties"]["confidence"], "$.c")
 
 

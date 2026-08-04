@@ -26,7 +26,7 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",
-    # 20260726 ** RG Reference implementation the header parser is checked against.
+    # 20260725 RG Reference implementation the header parser is checked against.
     # Undeclared, these tests skip silently and prove nothing on a fresh checkout.
     "gguf>=0.10",
 ]

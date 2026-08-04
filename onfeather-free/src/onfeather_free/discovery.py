@@ -26,7 +26,7 @@ from .registry import Model, Provider, Registry
 
 DEFAULT_TIMEOUT = 2.0
 
-#: 20260726 ** RG What a template that renders tool definitions has to reference.
+#: 20260725 RG What a tool-rendering template must reference.
 TOOL_TEMPLATE_MARKER = ".Tools"
 
 
@@ -59,7 +59,7 @@ def _fetch(
         with httpx.Client(timeout=timeout, transport=transport) as client:
             response = client.get(url)
     except httpx.HTTPError:
-        # 20260726 ** RG Runner is down: no models, so routing skips it.
+        # 20260725 RG Runner down: no models, so routing skips it.
         return []
 
     if response.status_code != 200:
@@ -74,7 +74,7 @@ def _fetch(
         identifier = entry.get("id") if isinstance(entry, dict) else None
         if not identifier:
             continue
-        # 20260726 ** RG Inherit the provider's capabilities, bar the ones we can check.
+        # 20260725 RG Inherit the provider's capabilities, bar the checkable ones.
         capabilities = set(provider.capabilities)
         if "tools" in capabilities and not _calls_tools(
             provider, str(identifier), timeout=timeout, transport=transport
@@ -97,7 +97,7 @@ def _calls_tools(
     treated as capable, because the failure mode of guessing yes is one wasted
     request and the failure mode of guessing no is a model silently dropped.
     """
-    # 20260726 ** RG /api/show sits at the root, not under the OpenAI-compatible prefix.
+    # 20260725 RG /api/show sits at the root, not under the OpenAI prefix.
     url = provider.base_url.rstrip("/").removesuffix("/v1") + "/api/show"
     try:
         with httpx.Client(timeout=timeout, transport=transport) as client:

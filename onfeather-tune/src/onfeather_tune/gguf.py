@@ -26,7 +26,7 @@ GGUF_MAGIC = b"GGUF"
 SUPPORTED_VERSIONS = (2, 3)
 DEFAULT_ALIGNMENT = 32
 
-# 20260726 ** RG Arrays longer than this are walked but not materialised: the only huge arrays in practice are.
+# 20260725 RG Long arrays are walked, not materialised.
 LARGE_ARRAY_THRESHOLD = 1024
 
 
@@ -60,42 +60,42 @@ _SCALAR_FORMATS: dict[int, tuple[str, int]] = {
     ValueType.FLOAT64: ("d", 8),
 }
 
-# 20260726 ** RG (block_size, type_size) per ggml type id.
+# 20260725 RG (block_size, type_size) per ggml type id.
 QUANT_SIZES: dict[int, tuple[int, int]] = {
-    0: (1, 4),  # 20260726 ** RG F32
-    1: (1, 2),  # 20260726 ** RG F16
-    2: (32, 18),  # 20260726 ** RG Q4_0
-    3: (32, 20),  # 20260726 ** RG Q4_1
-    6: (32, 22),  # 20260726 ** RG Q5_0
-    7: (32, 24),  # 20260726 ** RG Q5_1
-    8: (32, 34),  # 20260726 ** RG Q8_0
-    9: (32, 40),  # 20260726 ** RG Q8_1
-    10: (256, 84),  # 20260726 ** RG Q2_K
-    11: (256, 110),  # 20260726 ** RG Q3_K
-    12: (256, 144),  # 20260726 ** RG Q4_K
-    13: (256, 176),  # 20260726 ** RG Q5_K
-    14: (256, 210),  # 20260726 ** RG Q6_K
-    15: (256, 292),  # 20260726 ** RG Q8_K
-    16: (256, 66),  # 20260726 ** RG IQ2_XXS
-    17: (256, 74),  # 20260726 ** RG IQ2_XS
-    18: (256, 98),  # 20260726 ** RG IQ3_XXS
-    19: (256, 50),  # 20260726 ** RG IQ1_S
-    20: (32, 18),  # 20260726 ** RG IQ4_NL
-    21: (256, 110),  # 20260726 ** RG IQ3_S
-    22: (256, 82),  # 20260726 ** RG IQ2_S
-    23: (256, 136),  # 20260726 ** RG IQ4_XS
-    24: (1, 1),  # 20260726 ** RG I8
-    25: (1, 2),  # 20260726 ** RG I16
-    26: (1, 4),  # 20260726 ** RG I32
-    27: (1, 8),  # 20260726 ** RG I64
-    28: (1, 8),  # 20260726 ** RG F64
-    29: (256, 56),  # 20260726 ** RG IQ1_M
-    30: (1, 2),  # 20260726 ** RG BF16
-    34: (256, 54),  # 20260726 ** RG TQ1_0
-    35: (256, 66),  # 20260726 ** RG TQ2_0
-    39: (32, 17),  # 20260726 ** RG MXFP4
-    40: (64, 36),  # 20260726 ** RG NVFP4
-    41: (128, 18),  # 20260726 ** RG Q1_0
+    0: (1, 4),  # F32
+    1: (1, 2),  # F16
+    2: (32, 18),  # Q4_0
+    3: (32, 20),  # Q4_1
+    6: (32, 22),  # Q5_0
+    7: (32, 24),  # Q5_1
+    8: (32, 34),  # Q8_0
+    9: (32, 40),  # Q8_1
+    10: (256, 84),  # Q2_K
+    11: (256, 110),  # Q3_K
+    12: (256, 144),  # Q4_K
+    13: (256, 176),  # Q5_K
+    14: (256, 210),  # Q6_K
+    15: (256, 292),  # Q8_K
+    16: (256, 66),  # IQ2_XXS
+    17: (256, 74),  # IQ2_XS
+    18: (256, 98),  # IQ3_XXS
+    19: (256, 50),  # IQ1_S
+    20: (32, 18),  # IQ4_NL
+    21: (256, 110),  # IQ3_S
+    22: (256, 82),  # IQ2_S
+    23: (256, 136),  # IQ4_XS
+    24: (1, 1),  # I8
+    25: (1, 2),  # I16
+    26: (1, 4),  # I32
+    27: (1, 8),  # I64
+    28: (1, 8),  # F64
+    29: (256, 56),  # IQ1_M
+    30: (1, 2),  # BF16
+    34: (256, 54),  # TQ1_0
+    35: (256, 66),  # TQ2_0
+    39: (32, 17),  # MXFP4
+    40: (64, 36),  # NVFP4
+    41: (128, 18),  # Q1_0
 }
 
 TYPE_NAMES: dict[int, str] = {
@@ -152,7 +152,7 @@ class TensorRole(IntEnum):
     """
 
 
-#: 20260726 ** RG Roles that execute for every token of text generation.
+#: 20260725 RG Roles that execute for every token of text generation.
 HOT_ROLES = frozenset({
     TensorRole.TOKEN_EMBD,
     TensorRole.OUTPUT,
@@ -232,8 +232,7 @@ def classify(name: str) -> TensorRole:
         return TensorRole.AUDIO
     if name.startswith("mtp."):
         return TensorRole.MTP
-    # 20260726 ** RG A table indexed per token, not streamed: gemma4:e4b keeps 5.25
-    # of its 8.9 GiB here, which is why it decodes like a much smaller model.
+    # 20260725 RG Indexed per token, not streamed: gemma4:e4b keeps 5.25 of 8.9 GiB here.
     if name.startswith("per_layer_token_embd"):
         return TensorRole.PER_LAYER_EMBD
 
@@ -251,7 +250,7 @@ def classify(name: str) -> TensorRole:
         return TensorRole.OUTPUT
     if tail.startswith("attn_"):
         return TensorRole.ATTENTION
-    # 20260726 ** RG Router first: `ffn_gate_inp` picks the experts, it is not an expert.
+    # 20260725 RG Router first: `ffn_gate_inp` picks the experts, it is not one.
     if tail in {"ffn_gate_inp", "ffn_gate_inp_shexp", "ffn_exp_probs_b"}:
         return TensorRole.ROUTER
     if tail.endswith("_shexp"):
@@ -260,9 +259,7 @@ def classify(name: str) -> TensorRole:
         return TensorRole.ROUTED_EXPERTS
     if tail.startswith("ffn_"):
         return TensorRole.FFN_DENSE
-    # 20260726 ** RG An unknown tensor inside a block still runs every token. gemma4
-    # spends 66% of its file on per-block `proj`/`inp_gate` weights this parser has
-    # never seen; calling them cold predicted 8.5 tok/s where ~2.9 is plausible.
+    # 20260725 RG An unknown tensor in a block still runs every token; cold cost 3x.
     if name.startswith("blk."):
         return TensorRole.BLOCK_OTHER
     return TensorRole.OTHER
@@ -466,7 +463,6 @@ class _Cursor:
         element_type = self.u32()
         count = self.u64()
 
-        # 20260726 ** RG Walk oversized arrays without materialising them: the only ones that get large are tokeniser.
         if count > LARGE_ARRAY_THRESHOLD:
             if element_type == ValueType.STRING:
                 for _ in range(count):
@@ -498,7 +494,7 @@ def _read_stream(stream: BinaryIO, path: Path | None) -> GGUFModel:
     if magic != GGUF_MAGIC:
         raise GGUFError(f"not a GGUF file: magic is {magic!r}, expected {GGUF_MAGIC!r}")
 
-    # 20260726 ** RG GGUF v3 allows big-endian files.
+    # 20260725 RG GGUF v3 allows big-endian files.
     raw_version = stream.read(4)
     version = struct.unpack("<I", raw_version)[0]
     big_endian = version > 0xFFFF

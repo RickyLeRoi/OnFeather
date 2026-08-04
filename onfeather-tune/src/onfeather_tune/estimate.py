@@ -13,13 +13,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-#: 20260726 ** RG Weight streaming is pure read, so it beats the STREAM add benchmark. Calibrated: see calibration/.
+#: 20260725 RG Weight streaming is pure read, so it beats the STREAM add benchmark.
 WEIGHT_READ_FACTOR = 1.25
 
-#: 20260726 ** RG How much of the effective read bandwidth llama.cpp actually reaches.
+#: 20260725 RG How much of the effective read bandwidth llama.cpp reaches.
 DEFAULT_EFFICIENCY = 1.0
 
-#: 20260726 ** RG Multipliers bracketing the central prediction.
 UNCERTAINTY_LOW = 0.85
 UNCERTAINTY_HIGH = 1.10
 

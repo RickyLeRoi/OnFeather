@@ -162,7 +162,7 @@ class OnFeatherOptionsFlow(OptionsFlow):
     ) -> ConfigFlowResult:
         """Configure the agent."""
         if user_input is not None:
-            # 20260804 ** RG An empty API selection means "no control", and must not persist as [].
+            # 20260804 ++ RG #HASS An empty selection means no control, and must not persist as [].
             if not user_input.get(CONF_LLM_HASS_API):
                 user_input.pop(CONF_LLM_HASS_API, None)
             return self.async_create_entry(data=user_input)
@@ -208,7 +208,6 @@ class OnFeatherOptionsFlow(OptionsFlow):
         """
         options = [SelectOptionDict(label="auto — let the router choose", value="auto")]
 
-        # 20260804 ** RG Absent while the entry is retrying setup.
         coordinator = getattr(self.config_entry, "runtime_data", None)
         if coordinator is None:
             return options
@@ -216,7 +215,7 @@ class OnFeatherOptionsFlow(OptionsFlow):
         try:
             listed = await coordinator.client.models()
         except OnFeatherError:
-            # 20260804 ** RG A momentarily unreachable router must not block the options form.
+            # 20260804 ++ RG #HASS An unreachable router must not block the options form.
             return options
 
         options.extend(

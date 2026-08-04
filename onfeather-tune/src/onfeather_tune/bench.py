@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
-# 20260726 ** RG Sized to overflow any realistic L3 so we measure DRAM rather than cache.
+# 20260725 RG Sized to overflow any realistic L3, so we measure DRAM not cache.
 DEFAULT_ARRAY_MB = 256
 DEFAULT_ITERATIONS = 5
 
@@ -42,7 +42,7 @@ def _time_kernel(arrays: tuple[np.ndarray, np.ndarray, np.ndarray], iterations: 
     down, never speed it up.
     """
     a, b, c = arrays
-    _kernel(a, b, c)  # 20260726 ** RG warm up: fault in pages, settle clocks
+    _kernel(a, b, c)
     best = float("inf")
     for _ in range(iterations):
         start = time.perf_counter()
@@ -94,7 +94,7 @@ def measure_multi_thread(
     per_thread_mb = max(size_mb // threads, 32)
     workspaces = [_allocate(per_thread_mb) for _ in range(threads)]
 
-    # 20260726 ** RG Warm up every workspace before timing so page faults land outside the measured window.
+    # 20260725 RG Warm every workspace so page faults land outside the timing.
     for arrays in workspaces:
         _kernel(*arrays)
 

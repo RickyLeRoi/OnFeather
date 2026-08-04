@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-# 20260804 ** RG Set when the memories do not live under the default $HOME/.onfeather/solo.
+# 20260804 ++ RG #HASS For memories outside $HOME/.onfeather/solo.
 SOLO_ROOT_ENV = "ONFEATHER_SOLO_ROOT"
 
 
@@ -51,7 +51,7 @@ def solo_counts() -> dict[str, int] | None:
     try:
         counts = Store(root).counts()
     except OSError:
-        # 20260804 ** RG An unreadable store is a missing reading, never a failed request.
+        # 20260804 ++ RG #HASS An unreadable store is a missing reading, not a failed request.
         return None
 
     return {"total": sum(counts.values()), **counts}

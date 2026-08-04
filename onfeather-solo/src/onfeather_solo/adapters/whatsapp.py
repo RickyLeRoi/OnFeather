@@ -37,7 +37,7 @@ HEADER = re.compile(
     r"(?P<text>.*)$"
 )
 
-# 20260726 ** RG System notices carry no author and extract into nonsense.
+# 20260725 RG System notices carry no author and extract into nonsense.
 NOISE = (
     "<media omitted>", "<media omessi>", "<allegato:", "<attached:",
     "this message was deleted", "questo messaggio è stato eliminato",
@@ -106,7 +106,7 @@ def parse_export(text: str) -> list[Message]:
     for line in lines:
         match = HEADER.match(line)
         if not match:
-            # 20260726 ** RG Continuation of the message above, not a new one.
+            # 20260725 RG Continuation of the message above, not a new one.
             if current is not None and line.strip():
                 pending.append(line)
             continue
@@ -128,7 +128,7 @@ def _timestamp(match: re.Match, day_first: bool) -> datetime | None:
 
     year = int(match.group("year"))
     if year < 100:
-        # 20260726 ** RG WhatsApp predates 2000 for nobody.
+        # 20260725 RG WhatsApp predates 2000 for nobody.
         year += 2000
 
     hour = int(match.group("hour"))
@@ -142,7 +142,7 @@ def _timestamp(match: re.Match, day_first: bool) -> datetime | None:
         return datetime(year, month, day, hour, int(match.group("minute")),
                         int(match.group("second_hand") or 0))
     except ValueError:
-        # 20260726 ** RG Bad date loses the time, not the message.
+        # 20260725 RG Bad date loses the time, not the message.
         return None
 
 

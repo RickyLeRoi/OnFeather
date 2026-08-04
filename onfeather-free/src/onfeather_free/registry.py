@@ -17,7 +17,6 @@ import yaml
 
 PACIFIC = ZoneInfo("America/Los_Angeles")
 
-#: 20260726 ** RG How a limit's window is anchored.
 RESET_ROLLING = "rolling"
 RESET_UTC_MIDNIGHT = "utc_midnight"
 RESET_PACIFIC_MIDNIGHT = "pacific_midnight"

@@ -1,8 +1,6 @@
 name: hass
 
-# Validates and tests the Home Assistant integration. It ships as source that
-# Home Assistant loads, not as a wheel, so hassfest and HACS are the two checks
-# that stand in for "would this actually install".
+# 20260804 ++ RG #HASS It ships as source, so hassfest and HACS stand in for "does this install".
 
 on:
   push:
@@ -28,7 +26,7 @@ jobs:
         uses: hacs/action@main
         with:
           category: integration
-          # 20260804 ** RG The repo holds four projects, so it has no integration at its root.
+          # 20260804 ++ RG #HASS The repo holds four projects; none sits at its root.
           ignore: brands
 
   test:
@@ -39,7 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 20260804 ** RG Home Assistant 2026.7 will not install on anything older.
+      # 20260804 ++ RG #HASS Home Assistant 2026.7 will not install on anything older.
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"

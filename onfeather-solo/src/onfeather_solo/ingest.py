@@ -16,7 +16,7 @@ from pathlib import Path
 
 SCHEMA = "onfeather-solo/input@1"
 
-# 20260726 ** RG Accepted so an adapter can omit the version while iterating.
+# 20260725 RG Accepted so an adapter can omit the version while iterating.
 ACCEPTED_SCHEMAS = frozenset({SCHEMA, "onfeather-solo/input", ""})
 
 DEFAULT_CHUNK_CHARS = 4000
@@ -148,7 +148,7 @@ def _parse_item(raw: object, position: int) -> Item | None:
 
     text = str(raw.get("text") or "").strip()
     if not text:
-        # 20260726 ** RG Exports are full of empty entries; skip, do not fail.
+        # 20260725 RG Exports are full of empty entries; skip, do not fail.
         return None
 
     tags = raw.get("tags")
@@ -170,7 +170,7 @@ def _parse_time(value: object) -> datetime | None:
     try:
         return datetime.fromisoformat(text)
     except ValueError:
-        # 20260726 ** RG A bad timestamp loses ordering, not the message.
+        # 20260725 RG A bad timestamp loses ordering, not the message.
         return None
 
 
@@ -198,7 +198,7 @@ def chunk(
         rendered = len(item.render()) + 1
         if current and size + rendered > max_characters:
             chunks.append(Chunk(items=tuple(current), index=len(chunks)))
-            # 20260726 ** RG Carry the tail forward so facts spanning a boundary survive.
+            # 20260725 RG Carry the tail forward so facts spanning a boundary survive.
             current = current[-overlap:] if overlap else []
             size = sum(len(entry.render()) + 1 for entry in current)
         current.append(item)

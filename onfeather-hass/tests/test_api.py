@@ -22,7 +22,7 @@ from .conftest import URL
     [
         ("http://router.test:4141", "http://router.test:4141"),
         ("http://router.test:4141/", "http://router.test:4141"),
-        # 20260804 ** RG The router's own banner tells people to export a `/v1` base URL.
+        # 20260804 ++ RG #HASS The router's banner tells people to export a `/v1` base URL.
         ("http://router.test:4141/v1", "http://router.test:4141"),
         ("http://router.test:4141/v1/", "http://router.test:4141"),
         ("router.test:4141", "http://router.test:4141"),

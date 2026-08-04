@@ -9,7 +9,7 @@ import pytest
 
 from onfeather_free import headers as header_module
 
-# 20260726 ** RG Captured verbatim from live responses.
+# 20260725 RG Captured verbatim from live responses.
 GROQ = {
     "x-ratelimit-limit-requests": "1000",
     "x-ratelimit-limit-tokens": "12000",

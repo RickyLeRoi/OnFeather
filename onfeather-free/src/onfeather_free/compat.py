@@ -18,17 +18,17 @@ import hashlib
 import json
 from typing import Any
 
-#: 20260726 ** RG Provider takes JSON Schema as written, bar the meta keywords.
+#: 20260725 RG Takes JSON Schema as written.
 DIALECT_OPENAI = "openai"
-#: 20260726 ** RG OpenAI's own strict mode accepts a documented subset and 400s on the rest.
+#: 20260725 RG OpenAI strict mode: a documented subset, 400s on the rest.
 DIALECT_OPENAI_STRICT = "openai_strict"
 
 DIALECTS = (DIALECT_OPENAI, DIALECT_OPENAI_STRICT)
 
-#: 20260726 ** RG Identity keywords, unlike $defs, which $ref still needs.
+#: 20260725 RG Identity keywords; $defs stays, $ref needs it.
 _META_KEYWORDS = frozenset({"$schema", "$id"})
 
-#: 20260726 ** RG Keywords OpenAI's structured outputs reject under strict: true.
+#: 20260725 RG Rejected by structured outputs under strict.
 _STRICT_UNSUPPORTED = frozenset({
     "minLength", "maxLength", "pattern", "format",
     "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
@@ -301,7 +301,7 @@ def _is_type(value: Any, expected: str) -> bool:
         return isinstance(value, bool)
     types = _JSON_TYPES.get(expected)
     if types is None:
-        return True  # 20260726 ** RG Unknown type keyword: not our business to reject it.
+        return True  # 20260725 RG Unknown type keyword: not ours to reject.
     if expected == "string" and isinstance(value, bool):
         return False
     return isinstance(value, types)
@@ -344,7 +344,7 @@ def normalise_message(message: Any, *, seed: str = "") -> dict:
     if isinstance(calls, list) and calls:
         out["tool_calls"] = [_normalise_call(call, index, seed) for index, call in enumerate(calls)]
     elif "tool_calls" in out:
-        # 20260726 ** RG An empty array reads as "a tool step with no calls" and stalls the loop.
+        # 20260725 RG An empty array reads as a tool step with no calls and stalls the loop.
         out.pop("tool_calls")
     return out
 
@@ -358,7 +358,7 @@ def _normalise_call(call: Any, index: int, seed: str) -> dict:
     if arguments is None:
         function["arguments"] = "{}"
     elif not isinstance(arguments, str):
-        # 20260726 ** RG Ollama and a few others hand back a parsed object here.
+        # 20260725 RG Ollama hands back a parsed object here.
         function["arguments"] = json.dumps(arguments, ensure_ascii=False)
     out["function"] = function
 

@@ -42,7 +42,7 @@ def test_zero_active_bytes_does_not_divide_by_zero():
 MEASURED = [
     ("qwen2.5-coder:7b-instruct", 4_681_000_000, 5.35),
     ("qwen2.5-coder:14b", 8_980_000_000, 2.79),
-    # 20260726 ** RG A different architecture entirely: hybrid state-space/attention, with a vision encoder and an MTP.
+    # 20260725 RG A different architecture: hybrid state-space/attention, with vision.
     ("qwen3.6:27b", 16_220_000_000, 1.514),
 ]
 

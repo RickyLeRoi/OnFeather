@@ -136,7 +136,7 @@ def test_document_title_is_included():
 
 
 def many(count: int, size: int = 100):
-    # 20260726 ** RG Items must be distinguishable or overlap assertions prove nothing.
+    # 20260725 RG Items must differ or overlap assertions prove nothing.
     return document(items=[
         {"text": f"{index:04d} " + "x" * size, "author": "R"} for index in range(count)
     ])

@@ -27,7 +27,7 @@ def test_allocate_respects_requested_size():
 
 def test_measure_single_thread_returns_plausible_bandwidth():
     result = bench.measure_single_thread(size_mb=32, iterations=2)
-    # 20260726 ** RG Loose bounds: this must catch unit errors (a 1000x slip), not benchmark a specific machine.
+    # 20260725 RG Loose bounds: this catches a 1000x unit slip, not a slow machine.
     assert 0.5 < result < 2000
 
 

@@ -35,7 +35,7 @@ class OnFeatherCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         try:
             return await self.client.status()
         except OnFeatherAuthError as err:
-            # 20260804 ** RG Prompts a reauth flow rather than marking everything unavailable.
+            # 20260804 ++ RG #HASS Prompts a reauth flow rather than going unavailable.
             raise ConfigEntryAuthFailed(str(err)) from err
         except OnFeatherError as err:
             raise UpdateFailed(str(err)) from err

@@ -96,7 +96,7 @@ def test_nothing_falls_through_to_other():
     assert unclassified == []
 
 
-# 20260726 ** RG -- per-layer head_count_kv ---------------------------------------------
+# -- per-layer head_count_kv -----------------------------------------------------------
 
 
 def test_array_head_count_kv_reads_the_attention_value():

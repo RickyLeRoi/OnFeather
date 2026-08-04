@@ -140,7 +140,7 @@ async def async_setup_entry(
     coordinator = entry.runtime_data
     descriptions = list(SENSORS)
 
-    # 20260804 ** RG Absent until of-solo has been used once; adding it later needs a reload.
+    # 20260804 ++ RG #HASS Absent until of-solo is used; adding it later needs a reload.
     if coordinator.data.get("solo") is not None:
         descriptions += SOLO_SENSORS
 

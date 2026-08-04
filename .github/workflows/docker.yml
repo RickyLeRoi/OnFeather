@@ -1,7 +1,6 @@
 name: docker
 
-# Builds the image and publishes it to GHCR, so docker-compose.yml can pull it
-# instead of building. Pull requests build and smoke-test without publishing.
+# 20260803 ++ RG #Docker Builds and publishes to GHCR. Pull requests build and smoke-test only.
 
 on:
   push:
@@ -31,7 +30,7 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          # 20260803 ** RG metadata-action lowercases the repository name for us.
+          # 20260803 ++ RG #Docker metadata-action lowercases the repository name.
           images: ${{ env.REGISTRY }}/${{ github.repository }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
@@ -40,7 +39,7 @@ jobs:
             type=ref,event=pr
             type=sha,format=short
 
-      # 20260803 ** RG Single-arch build first: a broken image must not reach the registry.
+      # 20260803 ++ RG #Docker Single-arch first: a broken image must not reach the registry.
       - name: Build for smoke test
         uses: docker/build-push-action@v6
         with:
@@ -56,10 +55,10 @@ jobs:
           docker run --rm onfeather:smoke of-free --version
           docker run --rm onfeather:smoke of-solo --version
           docker run --rm onfeather:smoke of --version
-          # 20260803 ** RG Proves providers.yaml made it into the wheel, not just the source tree.
+          # 20260803 ++ RG #Docker Proves providers.yaml made it into the wheel.
           docker run --rm onfeather:smoke of-free providers > /dev/null
           docker run --rm onfeather:smoke test -f /opt/onfeather/share/providers-docker.yaml
-          # 20260803 ** RG The server has to answer on 0.0.0.0 and write its ledger as non-root.
+          # 20260803 ++ RG #Docker The server must answer on 0.0.0.0 and write its ledger as non-root.
           docker run -d --name onfeather-smoke -p 4141:4141 onfeather:smoke
           for _ in $(seq 1 30); do
             curl -fsS http://127.0.0.1:4141/health && break
@@ -67,7 +66,7 @@ jobs:
           done
           curl -fsS http://127.0.0.1:4141/health
           docker rm -f onfeather-smoke
-          # 20260804 ** RG A published port with a key set must refuse an anonymous caller.
+          # 20260803 ++ RG #Docker A published port with a key set must refuse an anonymous caller.
           docker run -d --name onfeather-auth -p 4142:4141 \
             -e ONFEATHER_API_KEY=smoke-test onfeather:smoke
           for _ in $(seq 1 30); do
