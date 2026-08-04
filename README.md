@@ -40,6 +40,18 @@ you can edit in any editor and put in git.
 
 → [README](onfeather-solo/README.md) · [SECURITY](onfeather-solo/SECURITY.md)
 
+## [onfeather-hass](onfeather-hass/) — Home Assistant
+
+**Assist, answered by whichever free tier still has quota.**
+
+A custom integration that points Home Assistant at the router: a conversation
+agent for Assist, and sensors for what served the last request, where the next
+one would go, how much quota is left and which providers are still missing a
+key. Ollama's integration gives you the first of those; the rest is what a free
+tier makes necessary.
+
+→ [README](onfeather-hass/README.md)
+
 ## Docker
 
 All three ship in one image, published to GHCR:

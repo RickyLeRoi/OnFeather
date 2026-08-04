@@ -91,6 +91,49 @@ def test_empty_store_lists_nothing(store):
     assert store.all() == []
 
 
+# -- counts ---------------------------------------------------------------
+
+
+def test_counts_an_empty_store_as_zeros(store):
+    assert store.counts() == {"proposed": 0, "confirmed": 0, "rejected": 0}
+
+
+def test_counts_every_status(store):
+    store.save(create("still to review"))
+    store.save(create("also to review"))
+
+    accepted = create("kept")
+    accepted.confirm()
+    store.save(accepted)
+
+    discarded = create("thrown out")
+    discarded.reject()
+    store.save(discarded)
+
+    assert store.counts() == {"proposed": 2, "confirmed": 1, "rejected": 1}
+
+
+def test_counts_agree_with_by_status(store):
+    for index in range(3):
+        store.save(create(f"memory {index}"))
+    assert store.counts()[STATUS_PROPOSED] == len(store.by_status(STATUS_PROPOSED))
+
+
+def test_counts_reads_no_files(store, monkeypatch):
+    """The whole point: a monitoring poll must not parse the collection."""
+    store.save(create("a fact"))
+    monkeypatch.setattr(
+        Store, "_read", lambda *_: pytest.fail("counts() must not open a memory")
+    )
+    assert store.counts()["proposed"] == 1
+
+
+def test_counts_ignores_files_that_are_not_memories(store):
+    (store.root / "proposed").mkdir(parents=True)
+    (store.root / "proposed" / "notes.txt").write_text("not a memory")
+    assert store.counts()["proposed"] == 0
+
+
 # -- search ---------------------------------------------------------------
 
 

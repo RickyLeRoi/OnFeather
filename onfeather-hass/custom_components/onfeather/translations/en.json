@@ -1,0 +1,81 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to OnFeather",
+        "description": "The address of your `of-free` server. A trailing `/v1` is fine — it will be trimmed.",
+        "data": {
+          "url": "URL",
+          "api_key": "API key"
+        },
+        "data_description": {
+          "url": "For example http://192.168.1.50:4141",
+          "api_key": "Only if the server was started with ONFEATHER_API_KEY set. Leave empty otherwise."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-enter the OnFeather API key",
+        "description": "{url} is refusing the current key.",
+        "data": {
+          "api_key": "API key"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot reach the router. Check the address, and that `of-free serve` is bound to an address Home Assistant can see rather than to localhost.",
+      "invalid_auth": "The router refused this API key.",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "This router is already set up.",
+      "reauth_successful": "Re-authentication was successful"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "OnFeather conversation agent",
+        "data": {
+          "model": "Model",
+          "prompt": "Instructions",
+          "llm_hass_api": "Control Home Assistant",
+          "max_history": "Turns to remember"
+        },
+        "data_description": {
+          "model": "`auto` lets the router pick per request. `private` forces a local model. Anything else pins one provider/model pair.",
+          "prompt": "The system prompt. Leave empty for the Home Assistant default.",
+          "llm_hass_api": "Which APIs the model may call to act on your home. Leave empty for a conversation agent that can only talk.",
+          "max_history": "Older turns are dropped before sending, because free tiers have small context windows. 0 keeps everything."
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "current_model": {
+        "name": "Current model"
+      },
+      "next_model": {
+        "name": "Next model"
+      },
+      "providers_quota": {
+        "name": "Provider quota"
+      },
+      "memories": {
+        "name": "Memories"
+      },
+      "pending_memories": {
+        "name": "Memories to review"
+      }
+    },
+    "binary_sensor": {
+      "providers_configured": {
+        "name": "Providers configured",
+        "state": {
+          "off": "None",
+          "on": "Ready"
+        }
+      }
+    }
+  }
+}

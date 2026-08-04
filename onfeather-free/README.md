@@ -123,6 +123,7 @@ $ of-free serve
 onfeather-free listening on http://127.0.0.1:4141/v1
   strategy: balanced
   routable: 13 provider/model pairs
+  auth: open
 
   export OPENAI_BASE_URL=http://127.0.0.1:4141/v1
   export OPENAI_API_KEY=unused
@@ -147,11 +148,41 @@ Three model names are special:
 
 Every response carries `X-OnFeather-Provider`, `X-OnFeather-Model` and
 `X-OnFeather-Failovers`, so you can always see what actually served you.
-`GET /v1/status` returns the full quota picture as JSON.
+`GET /v1/status` returns the full quota picture as JSON: every provider with its
+headroom, whether its key is actually set, where the *next* request would go and
+what the *last* one was actually served by.
 
 Built on the standard library — no framework, no `uvicorn`, nothing to deploy.
 Streaming is not supported yet and is refused with an explicit 400 rather than a
 response a client cannot parse.
+
+### Letting something else reach it
+
+There is no authentication by default, which is right for `127.0.0.1` and wrong
+for anything else. Binding to a network address without a key means anyone who
+can reach the port can spend your quota:
+
+```console
+$ export ONFEATHER_API_KEY=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
+$ of-free serve --host 0.0.0.0
+  auth: API key required
+```
+
+Callers then send it the way they already send one, `Authorization: Bearer …`,
+so nothing but the value changes:
+
+```python
+client = OpenAI(base_url="http://192.168.1.50:4141/v1", api_key=os.environ["ONFEATHER_API_KEY"])
+```
+
+`/health` stays open regardless, because the container healthcheck has no key to
+send.
+
+### Home Assistant
+
+[`onfeather-hass`](../onfeather-hass) turns this endpoint into an Assist
+conversation agent plus quota sensors — the same thing Ollama's integration
+does, with the free-tier accounting Ollama has no need for.
 
 ### Agents, tools and schemas
 

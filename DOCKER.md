@@ -31,6 +31,47 @@ curl http://localhost:4141/v1/chat/completions \
 Any OpenAI client works by pointing its base URL at `http://localhost:4141/v1`
 with any non-empty API key.
 
+## Letting other machines reach the router
+
+Compose publishes `4141` on every host interface, and the router has no
+authentication unless you give it a key. On a laptop that is nothing; on a LAN
+it means anyone who can reach the port can spend your free-tier quota.
+
+Set a key in `.env` — `env_file` hands it to the container, and `of-free serve`
+picks it up on its own:
+
+```sh
+python3 -c 'import secrets; print(secrets.token_urlsafe(32))'   # into ONFEATHER_API_KEY
+docker compose up -d
+docker compose logs free | grep auth        # → auth: API key required
+```
+
+Callers then send it the way OpenAI clients already do:
+
+```sh
+curl http://localhost:4141/v1/status -H "Authorization: Bearer $ONFEATHER_API_KEY"
+```
+
+`/health` stays open regardless, so the container healthcheck keeps passing.
+
+To skip the question entirely, bind the published port to loopback in
+`docker-compose.yml`:
+
+```yaml
+ports:
+  - "127.0.0.1:${ONFEATHER_PORT:-4141}:4141"
+```
+
+## Home Assistant
+
+The [`onfeather-hass`](onfeather-hass/) integration is not in this image and
+cannot be: it is a Home Assistant custom integration, loaded by Home Assistant
+from its own `config/custom_components/` directory, in whatever container or VM
+Home Assistant runs in. Nothing about it executes here.
+
+What this image has to do for it is the section above — be reachable, and want a
+key.
+
 ## Images and tags
 
 | Tag | What it is |

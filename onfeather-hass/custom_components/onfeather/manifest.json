@@ -1,0 +1,13 @@
+{
+  "domain": "onfeather",
+  "name": "OnFeather",
+  "codeowners": ["@RickyLeRoi"],
+  "config_flow": true,
+  "dependencies": ["conversation"],
+  "documentation": "https://github.com/RickyLeRoi/OnFeather/tree/main/onfeather-hass",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/RickyLeRoi/OnFeather/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}

@@ -1,0 +1,81 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connessione a OnFeather",
+        "description": "L'indirizzo del tuo server `of-free`. Un `/v1` finale va bene: viene rimosso.",
+        "data": {
+          "url": "URL",
+          "api_key": "Chiave API"
+        },
+        "data_description": {
+          "url": "Per esempio http://192.168.1.50:4141",
+          "api_key": "Solo se il server è stato avviato con ONFEATHER_API_KEY impostata. Altrimenti lascia vuoto."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reinserisci la chiave API di OnFeather",
+        "description": "{url} sta rifiutando la chiave attuale.",
+        "data": {
+          "api_key": "Chiave API"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Router irraggiungibile. Controlla l'indirizzo e che `of-free serve` sia in ascolto su un indirizzo visibile da Home Assistant, non su localhost.",
+      "invalid_auth": "Il router ha rifiutato questa chiave API.",
+      "unknown": "Errore imprevisto"
+    },
+    "abort": {
+      "already_configured": "Questo router è già configurato.",
+      "reauth_successful": "Autenticazione aggiornata"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Agente conversazionale OnFeather",
+        "data": {
+          "model": "Modello",
+          "prompt": "Istruzioni",
+          "llm_hass_api": "Controlla Home Assistant",
+          "max_history": "Turni da ricordare"
+        },
+        "data_description": {
+          "model": "`auto` lascia scegliere al router a ogni richiesta. `private` forza un modello locale. Qualsiasi altro valore fissa una coppia provider/modello.",
+          "prompt": "Il prompt di sistema. Lascia vuoto per quello predefinito di Home Assistant.",
+          "llm_hass_api": "Quali API il modello può chiamare per agire sulla casa. Lascia vuoto per un agente che sa solo parlare.",
+          "max_history": "I turni più vecchi vengono scartati prima dell'invio, perché i free tier hanno finestre di contesto piccole. 0 tiene tutto."
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "current_model": {
+        "name": "Modello corrente"
+      },
+      "next_model": {
+        "name": "Prossimo modello"
+      },
+      "providers_quota": {
+        "name": "Quota provider"
+      },
+      "memories": {
+        "name": "Memorie"
+      },
+      "pending_memories": {
+        "name": "Memorie da revisionare"
+      }
+    },
+    "binary_sensor": {
+      "providers_configured": {
+        "name": "Provider configurati",
+        "state": {
+          "off": "Nessuno",
+          "on": "Pronto"
+        }
+      }
+    }
+  }
+}

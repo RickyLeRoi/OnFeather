@@ -87,6 +87,20 @@ class Store:
                 found.append(memory)
         return found
 
+    def counts(self) -> dict[str, int]:
+        """How many memories exist, per status.
+
+        Reads no files. The status is the directory name, so counting is three
+        globs where `all()` would parse every memory on disk — which matters
+        because this is what a monitoring poll asks for, over and over.
+        """
+        return {
+            status: sum(1 for _ in (self.root / directory).glob("*.md"))
+            if (self.root / directory).is_dir()
+            else 0
+            for status, directory in DIRECTORIES.items()
+        }
+
     def by_status(self, status: str) -> list[Memory]:
         return [memory for memory in self.all() if memory.status == status]
 

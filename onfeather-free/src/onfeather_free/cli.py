@@ -80,6 +80,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-tokens", type=int, default=client_module.DEFAULT_MAX_TOKENS,
         help="output ceiling for callers that send none (default: %(default)s)",
     )
+    serve.add_argument(
+        "--api-key",
+        help=f"require this key from callers (default: ${server_module.API_KEY_ENV}, "
+        "or no authentication when that is unset too)",
+    )
     serve.add_argument("-v", "--verbose", action="store_true", help="log every request")
     serve.set_defaults(handler=_cmd_serve)
 
@@ -219,11 +224,13 @@ def _cmd_route(args: argparse.Namespace) -> int:
 
 def _cmd_serve(args: argparse.Namespace) -> int:
     registry, ledger = _open(args)
+    # 20260804 ** RG Env first so the key never has to appear in a process listing.
+    api_key = args.api_key or os.environ.get(server_module.API_KEY_ENV)
     try:
         server_module.serve(
             registry, ledger,
             host=args.host, port=args.port, strategy=args.strategy, verbose=args.verbose,
-            timeout=args.timeout, max_tokens=args.max_tokens,
+            timeout=args.timeout, max_tokens=args.max_tokens, api_key=api_key,
         )
     except OSError as error:
         print(f"error: cannot bind {args.host}:{args.port} — {error}", file=sys.stderr)

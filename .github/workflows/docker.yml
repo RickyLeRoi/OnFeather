@@ -67,6 +67,16 @@ jobs:
           done
           curl -fsS http://127.0.0.1:4141/health
           docker rm -f onfeather-smoke
+          # 20260804 ** RG A published port with a key set must refuse an anonymous caller.
+          docker run -d --name onfeather-auth -p 4142:4141 \
+            -e ONFEATHER_API_KEY=smoke-test onfeather:smoke
+          for _ in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:4142/health && break
+            sleep 1
+          done
+          test "$(curl -so /dev/null -w '%{http_code}' http://127.0.0.1:4142/v1/status)" = 401
+          curl -fsS http://127.0.0.1:4142/v1/status -H 'Authorization: Bearer smoke-test' > /dev/null
+          docker rm -f onfeather-auth
 
       - name: Log in to GHCR
         if: github.event_name != 'pull_request'

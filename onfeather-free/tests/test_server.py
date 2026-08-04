@@ -8,6 +8,7 @@ import threading
 import httpx
 import pytest
 
+from onfeather_free import companions
 from onfeather_free.budget import Ledger
 from onfeather_free.client import Client
 from onfeather_free.server import Router, build
@@ -206,6 +207,59 @@ def test_status_survives_an_empty_ledger(live):
     assert all(entry["available"] for entry in body["providers"])
 
 
+def test_status_separates_configured_from_merely_listed(live):
+    """`nokey` has quota headroom and no key. Only one of those is actionable."""
+    base, _ = live
+    entries = {e["name"]: e for e in httpx.get(f"{base}/v1/status", timeout=10).json()["providers"]}
+
+    assert entries["fastcloud"]["configured"] is True
+    assert entries["nokey"]["configured"] is False
+    assert entries["nokey"]["available"] is True, "quota is untouched; the key is what is missing"
+
+
+def test_status_names_the_variable_a_provider_wants(live):
+    base, _ = live
+    entries = {e["name"]: e for e in httpx.get(f"{base}/v1/status", timeout=10).json()["providers"]}
+    assert entries["nokey"]["api_key_env"] == "NOKEY_API_KEY"
+    assert entries["ollama"]["api_key_env"] is None, "a local provider needs none"
+
+
+def test_status_never_leaks_a_key(live):
+    base, _ = live
+    assert "sk-test" not in httpx.get(f"{base}/v1/status", timeout=10).text
+
+
+def test_current_is_absent_until_something_is_served(live):
+    base, _ = live
+    assert httpx.get(f"{base}/v1/status", timeout=10).json()["current"] is None
+
+
+def test_current_reports_what_actually_answered(live):
+    base, _ = live
+    served = post(base, {"messages": [{"role": "user", "content": "hi"}]})
+
+    current = httpx.get(f"{base}/v1/status", timeout=10).json()["current"]
+    assert current["id"] == served.json()["model"]
+    assert current["provider"] == served.headers["X-OnFeather-Provider"]
+    assert current["tokens_in"] == 7
+    assert current["tokens_out"] == 3
+    assert current["failovers"] == 0
+
+
+def test_current_is_the_latest_not_the_first(live):
+    base, _ = live
+    post(base, {"messages": [{"role": "user", "content": "hi"}]})
+    post(base, {"model": "private", "messages": [{"role": "user", "content": "hi"}]})
+
+    current = httpx.get(f"{base}/v1/status", timeout=10).json()["current"]
+    assert current["provider"] == "ollama"
+
+
+def test_status_reports_the_strategy(live):
+    base, _ = live
+    assert httpx.get(f"{base}/v1/status", timeout=10).json()["strategy"] == "balanced"
+
+
 # -- concurrency ----------------------------------------------------------
 
 
@@ -251,3 +305,96 @@ def test_json_body_is_valid_for_every_error(live):
     for payload in ({}, {"messages": []}, {"messages": [{"role": "user"}], "stream": True}):
         response = post(base, payload)
         assert "error" in json.loads(response.text)
+
+
+# -- authentication -------------------------------------------------------
+
+
+@pytest.fixture
+def guarded(live):
+    """The same server, now demanding a key."""
+    base, router = live
+    router.api_key = "sk-onfeather"
+    return base, router
+
+
+def test_no_key_configured_means_no_check(live):
+    base, _ = live
+    assert httpx.get(f"{base}/v1/status", timeout=10).status_code == 200
+
+
+def test_status_needs_the_key(guarded):
+    base, _ = guarded
+    assert httpx.get(f"{base}/v1/status", timeout=10).status_code == 401
+
+
+def test_completions_need_the_key(guarded):
+    base, _ = guarded
+    assert post(base, {"messages": [{"role": "user", "content": "hi"}]}).status_code == 401
+
+
+def test_the_right_key_gets_through(guarded):
+    base, _ = guarded
+    headers = {"Authorization": "Bearer sk-onfeather"}
+    assert httpx.get(f"{base}/v1/status", headers=headers, timeout=10).status_code == 200
+
+
+def test_a_bare_key_without_the_bearer_prefix_is_accepted(guarded):
+    base, _ = guarded
+    headers = {"Authorization": "sk-onfeather"}
+    assert httpx.get(f"{base}/v1/status", headers=headers, timeout=10).status_code == 200
+
+
+def test_the_wrong_key_is_refused(guarded):
+    base, _ = guarded
+    headers = {"Authorization": "Bearer sk-guessed"}
+    assert httpx.get(f"{base}/v1/status", headers=headers, timeout=10).status_code == 401
+
+
+def test_health_stays_open(guarded):
+    """The container healthcheck has no key to send."""
+    base, _ = guarded
+    assert httpx.get(f"{base}/health", timeout=10).status_code == 200
+
+
+def test_a_refused_post_leaves_the_connection_usable(guarded):
+    """The body still has to be read, or keep-alive parses it as the next request."""
+    base, router = guarded
+    body = {"messages": [{"role": "user", "content": "x" * 500}]}
+
+    with httpx.Client(timeout=10) as connection:
+        refused = connection.post(f"{base}/v1/chat/completions", json=body)
+        assert refused.status_code == 401
+
+        router.api_key = None
+        served = connection.post(f"{base}/v1/chat/completions", json=body)
+        assert served.status_code == 200, "the refused body poisoned the connection"
+
+
+def test_refusal_says_how_to_authenticate(guarded):
+    base, _ = guarded
+    response = httpx.get(f"{base}/v1/status", timeout=10)
+    assert response.json()["error"]["code"] == "invalid_api_key"
+    assert "Bearer" in response.headers["WWW-Authenticate"]
+
+
+# -- companion tools ------------------------------------------------------
+
+
+def test_solo_counts_are_absent_when_the_store_is(live, monkeypatch):
+    base, _ = live
+    monkeypatch.setattr(companions, "solo_root", lambda: None)
+    assert "solo" not in httpx.get(f"{base}/v1/status", timeout=10).json()
+
+
+def test_solo_counts_appear_once_the_store_exists(live, monkeypatch, tmp_path):
+    # 20260804 ** RG Separate repos: of-solo is only importable where both are installed.
+    pytest.importorskip("onfeather_solo")
+
+    base, _ = live
+    (tmp_path / "proposed").mkdir()
+    (tmp_path / "proposed" / "one.md").write_text("---\n---\nbody")
+    monkeypatch.setattr(companions, "solo_root", lambda: tmp_path)
+
+    solo = httpx.get(f"{base}/v1/status", timeout=10).json()["solo"]
+    assert solo == {"total": 1, "proposed": 1, "confirmed": 0, "rejected": 0}

@@ -17,20 +17,29 @@ client for anything it does not already send.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from . import companions
 from .budget import Ledger
 from .client import Client, CompletionError
 from .registry import Registry
-from .router import STRATEGY_BALANCED, candidates
+from .router import STRATEGY_BALANCED, candidates, configured_providers
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 4141
+
+# 20260804 ** RG Reachable without a key: the container healthcheck has none to send.
+PUBLIC_PATHS = frozenset({"/health", "/healthz"})
+
+# 20260804 ** RG Unset means no authentication at all, which is the loopback default.
+API_KEY_ENV = "ONFEATHER_API_KEY"
 
 # 20260726 ** RG Requests naming these get routed locally, whatever the strategy.
 PRIVATE_MODEL_ALIASES = frozenset({"private", "local"})
@@ -110,6 +119,36 @@ def estimated_tokens(payload: dict) -> int:
     return len(material) // CHARS_PER_TOKEN
 
 
+@dataclass(frozen=True)
+class Served:
+    """The last request this server actually answered.
+
+    `next` says where the router would go; this says where it went. They differ
+    the moment a provider runs out mid-conversation, and the gap is the whole
+    reason both are worth reporting.
+    """
+
+    provider: str
+    model: str
+    at: float
+    failovers: int
+    tokens_in: int
+    tokens_out: int
+    latency_s: float
+
+    def as_dict(self) -> dict:
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "id": f"{self.provider}/{self.model}",
+            "at": self.at,
+            "failovers": self.failovers,
+            "tokens_in": self.tokens_in,
+            "tokens_out": self.tokens_out,
+            "latency_s": round(self.latency_s, 3),
+        }
+
+
 class Router:
     """Shared state for the handler, which cannot take constructor arguments."""
 
@@ -122,6 +161,7 @@ class Router:
         verbose: bool = False,
         timeout: float | None = None,
         max_tokens: int | None = None,
+        api_key: str | None = None,
     ) -> None:
         self.registry = registry
         self.ledger = ledger
@@ -133,7 +173,10 @@ class Router:
         self.client = Client(registry, ledger, **options)
         self.strategy = strategy
         self.verbose = verbose
+        self.api_key = api_key or None
         self.sessions = Sessions()
+        # 20260804 ** RG Rebound whole under the GIL, so worker threads need no lock.
+        self.last: Served | None = None
 
     def models(self) -> list[dict]:
         """Everything routable right now, plus the virtual `auto` model."""
@@ -216,6 +259,33 @@ class Handler(BaseHTTPRequestHandler):
             extra=extra,
         )
 
+    def _authorised(self, path: str) -> bool:
+        """Whether this request may proceed.
+
+        Unset key means no check at all, so a loopback install behaves exactly
+        as it did before. When one is set it travels in `Authorization: Bearer`,
+        which every OpenAI client already sends and every user already expects
+        to fill in.
+        """
+        expected = self.router.api_key
+        if not expected or path in PUBLIC_PATHS:
+            return True
+
+        offered = (self.headers.get("Authorization") or "").strip()
+        if offered[:7].lower() == "bearer ":
+            offered = offered[7:].strip()
+        return bool(offered) and hmac.compare_digest(offered, expected)
+
+    def _unauthorised(self) -> None:
+        # 20260804 ** RG Drain the body first, or keep-alive reads it as the next request.
+        self._read_json()
+        self._error(
+            401,
+            "missing or invalid API key; send it as `Authorization: Bearer <key>`",
+            code="invalid_api_key",
+            extra={"WWW-Authenticate": 'Bearer realm="onfeather-free"'},
+        )
+
     def _read_json(self) -> dict | None:
         try:
             length = int(self.headers.get("Content-Length", 0))
@@ -232,6 +302,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0].rstrip("/")
+        if not self._authorised(path):
+            self._unauthorised()
+            return
 
         if path in ("/health", "/healthz"):
             self._send(200, {"status": "ok"})
@@ -244,6 +317,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0].rstrip("/")
+        if not self._authorised(path):
+            self._unauthorised()
+            return
+
         if path not in ("/v1/chat/completions", "/chat/completions"):
             self._error(404, f"unknown path {path}", "not_found")
             return
@@ -290,6 +367,15 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         self.router.sessions.remember(key, result.provider.name, result.model)
+        self.router.last = Served(
+            provider=result.provider.name,
+            model=result.model,
+            at=time.time(),
+            failovers=len(result.attempts) - 1,
+            tokens_in=result.tokens_in,
+            tokens_out=result.tokens_out,
+            latency_s=result.latency_s,
+        )
         headers = {
             # 20260726 ** RG Expose the choice so callers can see what served them.
             "X-OnFeather-Provider": result.provider.name,
@@ -326,12 +412,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def _status_payload(self) -> dict:
         now = datetime.now(timezone.utc)
+        configured = configured_providers(self.router.registry)
+
         providers = []
         for provider in self.router.registry.usable():
             state = self.router.ledger.status(provider, now)
             providers.append({
                 "name": provider.name,
                 "label": provider.label,
+                # 20260804 ** RG An unconfigured provider still reads as full headroom.
+                "configured": provider.name in configured,
+                "api_key_env": provider.api_key_env,
                 "available": state.available,
                 "headroom": round(state.headroom, 4),
                 "local": provider.local,
@@ -346,17 +437,31 @@ class Handler(BaseHTTPRequestHandler):
                     for limit in state.limits
                 ],
             })
+
         routable = candidates(
             self.router.registry, self.router.ledger,
             strategy=self.router.strategy, now=now,
         )
-        return {
+        last = self.router.last
+        payload = {
+            "strategy": self.router.strategy,
             "providers": providers,
             "next": (
-                {"provider": routable[0].provider.name, "model": routable[0].model.id}
+                {
+                    "provider": routable[0].provider.name,
+                    "model": routable[0].model.id,
+                    "id": f"{routable[0].provider.name}/{routable[0].model.id}",
+                }
                 if routable else None
             ),
+            "current": last.as_dict() if last else None,
         }
+
+        # 20260804 ** RG Absent rather than zeroed when of-solo is not installed or never used.
+        solo = companions.solo_counts()
+        if solo is not None:
+            payload["solo"] = solo
+        return payload
 
 
 def _as_openai_response(result) -> dict:
@@ -402,19 +507,25 @@ def serve(
     verbose: bool = False,
     timeout: float | None = None,
     max_tokens: int | None = None,
+    api_key: str | None = None,
 ) -> None:
     """Run until interrupted."""
     router = Router(
         registry, ledger, strategy=strategy, verbose=verbose,
-        timeout=timeout, max_tokens=max_tokens,
+        timeout=timeout, max_tokens=max_tokens, api_key=api_key,
     )
     server = build(router, host, port)
     print(f"onfeather-free listening on http://{host}:{port}/v1")
     print(f"  strategy: {strategy}")
     print(f"  routable: {len(candidates(registry, ledger, strategy=strategy))} provider/model pairs")
     print(f"  tool calling: {len(candidates(registry, ledger, requires={'tools'}))} pairs")
+    print(f"  auth: {'API key required' if api_key else 'open'}")
+    if not api_key and host not in ("127.0.0.1", "localhost", "::1"):
+        # 20260804 ** RG Bound off loopback with no key: anyone on the network can spend the quota.
+        print(f"    warning: reachable from the network — set {API_KEY_ENV} to require a key")
     print("\n  export OPENAI_BASE_URL=http://%s:%d/v1" % (host, port))
-    print("  export OPENAI_API_KEY=unused\n")
+    # 20260804 ** RG Named, not printed: this line ends up in docker logs.
+    print(f"  export OPENAI_API_KEY={'$' + API_KEY_ENV if api_key else 'unused'}\n")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
