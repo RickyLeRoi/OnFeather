@@ -2,23 +2,13 @@ name: hass
 
 # 20260804 ++ RG #HASS It ships as source, so hassfest and HACS stand in for "does this install".
 
+# 20260804 ++ RG #HASS No `paths:` filter: half the HACS checks are repository
+# 20260804 ++ RG #HASS properties (license, topics, description), which no path can match.
 on:
   push:
     branches: [main]
-    paths:
-      - "custom_components/**"
-      - "tests/**"
-      - "hacs.json"
-      - "requirements-test.txt"
-      - ".github/workflows/hass.yml"
   pull_request:
     branches: [main]
-    paths:
-      - "custom_components/**"
-      - "tests/**"
-      - "hacs.json"
-      - "requirements-test.txt"
-      - ".github/workflows/hass.yml"
   workflow_dispatch:
 
 jobs:
