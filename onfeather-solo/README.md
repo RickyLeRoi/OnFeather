@@ -19,8 +19,9 @@ Pre-alpha. Import, extraction, review and search work; embeddings are next.
 | `of-solo add` | ✅ working | Record a fact, as a proposal |
 | `of-solo review` | ✅ working | Confirm, reject or edit proposals one by one |
 | `of-solo list` | ✅ working | Everything held, by status |
-| `of-solo search` | ✅ working | Keyword search over confirmed memories |
-| `of-solo show` | ✅ working | One memory in full |
+| `of-solo search` | ✅ working | Keyword search over confirmed memories, one hop along links |
+| `of-solo show` | ✅ working | One memory in full, with its links and backlinks |
+| `of-solo link` | ✅ working | Connect two memories, the way Obsidian would |
 | `of-solo import` | ✅ working | Convert WhatsApp and Telegram exports to the input schema |
 | `of-solo learn` | ✅ working | Propose memories from a chat or document, **locally only** |
 | `of-solo ask` | 📋 planned | Answer from memory |
@@ -91,7 +92,60 @@ useful and moving a file by hand is a valid way to change your mind. When the
 directory and the frontmatter disagree, the directory wins.
 
 Ids are derived from content, so proposing the same fact twice is a no-op rather
-than a duplicate.
+than a duplicate. Filenames are not: a memory is named once, when it is created,
+and correcting it later never renames the file. A `[[link]]` names a file, so a
+name that moved would be a link that broke.
+
+## Linked memories
+
+Memories link to each other in Obsidian's syntax, written in the body:
+
+```markdown
+Riccardo prefers Apache-2.0 over MIT for infra tooling.
+
+[[of-free-ships-before-of-tune-9a1c22]]
+```
+
+`of-solo link` writes one for you, by filename — which is what Obsidian follows:
+
+```console
+$ of-solo link 1c1962 9a1c22
+linked 1c196227d65e to 9a1c2231ff08  of-free ships before of-tune
+```
+
+Links live in the body and nowhere else. There is deliberately no `links:` key
+in the frontmatter: Obsidian knows nothing about frontmatter, so a second copy
+would be wrong the first time you edited a note outside this tool.
+
+**Links change what search returns.** A memory linked to a hit comes back too, at
+half the hit's score — never above the memory that pulled it in, and labelled so
+the result can explain itself:
+
+```console
+$ of-solo search apache
+ 1.00  1c196227d65e  Riccardo prefers Apache-2.0 over MIT for infra tooling
+ 0.50  9a1c2231ff08  of-free ships before of-tune  via 1c196227d65e
+```
+
+One hop, not a transitive closure, and links out of unreviewed memories cannot
+pull them into an answer. `--no-links` turns the whole thing off. A link that
+changed nothing about what you find back would be decoration.
+
+`of-solo show` prints the file itself on stdout and its links and backlinks on
+stderr, so `of-solo show 1c1962 > note.md` still yields a memory file.
+
+## Opening it in Obsidian
+
+Point a vault at `~/.onfeather/solo/` and graph view, backlinks and editing all
+work — the file format was chosen for exactly this, and nothing here needs to be
+installed for it. Rename a note in Obsidian and `of-solo` keeps the name you
+gave it.
+
+One thing to know: **only the three status directories are read.** A note you
+create at the top of the vault is invisible to `of-solo` — no error, just
+absent. Move it into `proposed/` with frontmatter to have it picked up. Until
+then, links to it resolve to nothing, which `of-solo show` reports rather than
+hides.
 
 ## Learning from a WhatsApp export
 

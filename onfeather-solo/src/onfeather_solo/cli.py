@@ -10,7 +10,15 @@ from pathlib import Path
 from . import __version__, extract, ingest
 from .adapters import telegram, whatsapp
 from .adapters.common import DEFAULT_MIN_CHARS, AdapterError
-from .memory import STATUS_CONFIRMED, STATUS_PROPOSED, STATUS_REJECTED, TYPES, create
+from .memory import (
+    STATUS_CONFIRMED,
+    STATUS_PROPOSED,
+    STATUS_REJECTED,
+    TYPES,
+    create,
+    with_link,
+    without_link,
+)
 from .netguard import EgressBlocked, assert_local
 from .store import DEFAULT_ROOT, Store
 
@@ -56,11 +64,19 @@ def main(argv: list[str] | None = None) -> int:
     search.add_argument("query")
     search.add_argument("-n", "--limit", type=int, default=10)
     search.add_argument("--all-statuses", action="store_true")
+    search.add_argument("--no-links", action="store_true",
+                        help="do not follow links out of the memories that matched")
     search.set_defaults(handler=_cmd_search)
 
     show = sub.add_parser("show", help="print one memory in full")
     show.add_argument("id")
     show.set_defaults(handler=_cmd_show)
+
+    link = sub.add_parser("link", help="link one memory to another")
+    link.add_argument("source", help="id or prefix of the memory to link from")
+    link.add_argument("target", help="id or prefix of the memory to link to")
+    link.add_argument("--remove", action="store_true", help="unlink instead")
+    link.set_defaults(handler=_cmd_link)
 
     importer = sub.add_parser(
         "import", help="convert WhatsApp or Telegram exports to the input schema"
@@ -185,13 +201,51 @@ def _cmd_review(args: argparse.Namespace) -> int:
 def _cmd_search(args: argparse.Namespace) -> int:
     store = Store(args.root)
     status = None if args.all_statuses else STATUS_CONFIRMED
-    hits = store.search(args.query, status=status, limit=args.limit)
+    hits = store.search(args.query, status=status, limit=args.limit,
+                        follow_links=not args.no_links)
 
     if not hits:
         print("no matches", file=sys.stderr)
         return 1
     for hit in hits:
-        print(f"{hit.score:5.2f}  {hit.memory.id}  {hit.memory.summary}")
+        # 20260807 RG Say why a memory is here when the query itself does not explain it.
+        trail = f"  via {hit.via.id}" if hit.via else ""
+        print(f"{hit.score:5.2f}  {hit.memory.id}  {hit.memory.summary}{trail}")
+    return 0
+
+
+def _cmd_link(args: argparse.Namespace) -> int:
+    store = Store(args.root)
+    pool = store.all()
+
+    source = store.get(args.source)
+    target = store.get(args.target)
+    for given, found in ((args.source, source), (args.target, target)):
+        if found is None:
+            print(f"no memory matching {given!r}", file=sys.stderr)
+            return 1
+    if source.id == target.id:
+        print("a memory cannot link to itself", file=sys.stderr)
+        return 1
+
+    if args.remove:
+        # 20260807 RG Remove it however it was written — by filename, by id, by prefix.
+        body = source.body
+        for written, found in store.links(source, pool):
+            if found is not None and found.id == target.id:
+                body = without_link(body, written)
+    else:
+        # 20260807 RG Link by filename: that is what Obsidian follows and renames.
+        body = with_link(source.body, target.path.stem if target.path else target.id)
+
+    if body == source.body:
+        print("already linked" if not args.remove else "no link to remove", file=sys.stderr)
+        return 0
+
+    source.edit(body)
+    store.save(source)
+    verb = "unlinked" if args.remove else "linked"
+    print(f"{verb} {source.id} {'from' if args.remove else 'to'} {target.id}  {target.summary}")
     return 0
 
 
@@ -426,7 +480,23 @@ def _cmd_show(args: argparse.Namespace) -> int:
     if memory is None:
         print(f"no memory matching {args.id!r}", file=sys.stderr)
         return 1
+
     print(memory.to_markdown())
+
+    # 20260807 RG Links to stderr: stdout stays the file, so `show > note.md` still works.
+    pool = store.all()
+    outgoing = store.links(memory, pool)
+    if outgoing:
+        print("links:", file=sys.stderr)
+        for target, found in outgoing:
+            where = f"{found.id}  {found.summary}" if found else "unresolved"
+            print(f"  -> [[{target}]]  {where}", file=sys.stderr)
+
+    incoming = store.backlinks(memory, pool)
+    if incoming:
+        print("backlinks:", file=sys.stderr)
+        for other in incoming:
+            print(f"  <- {other.id}  {other.summary}", file=sys.stderr)
     return 0
 
 

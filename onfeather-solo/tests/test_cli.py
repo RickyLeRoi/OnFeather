@@ -13,6 +13,8 @@ import re
 from onfeather_solo import ingest
 from onfeather_solo.cli import main
 from onfeather_solo.ingest import chunk, from_dict
+from onfeather_solo.memory import parse
+from onfeather_solo.store import Store
 
 SENTENCE = (
     "Alla fine ho preso il portatile nuovo e sto rifacendo tutto il setup "
@@ -185,3 +187,114 @@ def test_telegram_authors_are_listed_across_every_chat(tmp_path, capsys):
     printed = capsys.readouterr().err
     assert "2 chat(s), 20 messages" in printed
     assert "Riccardo" in printed
+
+
+# -- link -----------------------------------------------------------------
+
+
+def add(tmp_path, text: str) -> str:
+    """Record a confirmed memory and return its id."""
+    main(["--root", str(tmp_path), "add", text, "--confirmed"])
+    return Store(tmp_path).search(text.split()[0], limit=1)[0].memory.id
+
+
+def test_link_connects_two_memories_both_ways(tmp_path, capsys):
+    licence = add(tmp_path, "Apache-2.0 over MIT for infra tooling")
+    berlin = add(tmp_path, "Berlin is where the team sits")
+    capsys.readouterr()
+
+    assert main(["--root", str(tmp_path), "link", licence, berlin]) == 0
+    store = Store(tmp_path)
+    assert store.links(store.get(licence))[0][1].id == berlin
+    assert [m.id for m in store.backlinks(store.get(berlin))] == [licence]
+
+
+def test_link_is_written_as_a_filename_obsidian_can_follow(tmp_path, capsys):
+    licence = add(tmp_path, "Apache-2.0 over MIT for infra tooling")
+    berlin = add(tmp_path, "Berlin is where the team sits")
+    main(["--root", str(tmp_path), "link", licence, berlin])
+    capsys.readouterr()
+
+    store = Store(tmp_path)
+    assert f"[[{store.get(berlin).path.stem}]]" in store.get(licence).body
+
+
+def test_linking_twice_changes_nothing(tmp_path, capsys):
+    licence = add(tmp_path, "Apache-2.0 over MIT for infra tooling")
+    berlin = add(tmp_path, "Berlin is where the team sits")
+    main(["--root", str(tmp_path), "link", licence, berlin])
+    before = Store(tmp_path).get(licence).body
+    capsys.readouterr()
+
+    assert main(["--root", str(tmp_path), "link", licence, berlin]) == 0
+    assert "already linked" in capsys.readouterr().err
+    assert Store(tmp_path).get(licence).body == before
+
+
+def test_link_remove_undoes_it(tmp_path, capsys):
+    licence = add(tmp_path, "Apache-2.0 over MIT for infra tooling")
+    berlin = add(tmp_path, "Berlin is where the team sits")
+    main(["--root", str(tmp_path), "link", licence, berlin])
+    capsys.readouterr()
+
+    assert main(["--root", str(tmp_path), "link", licence, berlin, "--remove"]) == 0
+    assert Store(tmp_path).links(Store(tmp_path).get(licence)) == []
+
+
+def test_link_refuses_a_memory_it_cannot_find(tmp_path, capsys):
+    licence = add(tmp_path, "Apache-2.0 over MIT for infra tooling")
+    capsys.readouterr()
+
+    assert main(["--root", str(tmp_path), "link", licence, "nope"]) == 1
+    assert "no memory matching" in capsys.readouterr().err
+
+
+def test_link_refuses_a_memory_linking_to_itself(tmp_path, capsys):
+    licence = add(tmp_path, "Apache-2.0 over MIT for infra tooling")
+    capsys.readouterr()
+
+    assert main(["--root", str(tmp_path), "link", licence, licence]) == 1
+    assert "cannot link to itself" in capsys.readouterr().err
+
+
+def test_show_keeps_stdout_to_the_file_itself(tmp_path, capsys):
+    """`of-solo show x > note.md` has to keep producing a valid memory file."""
+    licence = add(tmp_path, "Apache-2.0 over MIT for infra tooling")
+    berlin = add(tmp_path, "Berlin is where the team sits")
+    main(["--root", str(tmp_path), "link", licence, berlin])
+    capsys.readouterr()
+
+    assert main(["--root", str(tmp_path), "show", licence]) == 0
+    captured = capsys.readouterr()
+    assert parse(captured.out).id == licence
+    assert "links:" in captured.err and berlin in captured.err
+
+
+def test_show_reports_backlinks(tmp_path, capsys):
+    licence = add(tmp_path, "Apache-2.0 over MIT for infra tooling")
+    berlin = add(tmp_path, "Berlin is where the team sits")
+    main(["--root", str(tmp_path), "link", licence, berlin])
+    capsys.readouterr()
+
+    main(["--root", str(tmp_path), "show", berlin])
+    assert "backlinks:" in capsys.readouterr().err
+
+
+def test_show_flags_a_link_that_points_nowhere(tmp_path, capsys):
+    licence = add(tmp_path, "Apache-2.0 over MIT, see [[a-note-never-written]]")
+    capsys.readouterr()
+
+    main(["--root", str(tmp_path), "show", licence])
+    assert "unresolved" in capsys.readouterr().err
+
+
+def test_search_says_when_a_result_arrived_over_a_link(tmp_path, capsys):
+    licence = add(tmp_path, "Apache-2.0 over MIT for infra tooling")
+    berlin = add(tmp_path, "Berlin is where the team sits")
+    main(["--root", str(tmp_path), "link", licence, berlin])
+    capsys.readouterr()
+
+    assert main(["--root", str(tmp_path), "search", "apache"]) == 0
+    printed = capsys.readouterr().out
+    assert berlin in printed
+    assert f"via {licence}" in printed

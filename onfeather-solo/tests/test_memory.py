@@ -3,7 +3,16 @@ from datetime import date
 import pytest
 
 from onfeather_solo import memory as memory_module
-from onfeather_solo.memory import STATUS_CONFIRMED, STATUS_PROPOSED, MemoryError_, create, parse
+from onfeather_solo.memory import (
+    STATUS_CONFIRMED,
+    STATUS_PROPOSED,
+    MemoryError_,
+    create,
+    parse,
+    wikilinks,
+    with_link,
+    without_link,
+)
 
 SAMPLE = """---
 id: abc123def456
@@ -32,7 +41,6 @@ def test_parses_frontmatter_and_body():
     assert m.created == date(2026, 7, 20)
     assert m.confidence == 0.8
     assert m.tags == ["python", "work"]
-    assert m.links == ["other123"]
     assert m.body.startswith("Riccardo prefers Apache-2.0")
 
 
@@ -157,3 +165,80 @@ def test_comma_separated_tags_are_accepted():
     """Hand-edited files are the point, so be forgiving about shape."""
     m = parse("---\ntags: python, work\n---\nbody\n")
     assert m.tags == ["python", "work"]
+
+
+# -- links ----------------------------------------------------------------
+
+
+def test_links_are_read_from_the_body():
+    assert create("prefers Apache, see [[licensing-note]]").links == ["licensing-note"]
+
+
+def test_link_decorations_all_name_the_same_note():
+    """Obsidian writes any of these; they are one link."""
+    assert wikilinks("[[note|shown as this]]") == ["note"]
+    assert wikilinks("[[note#a heading]]") == ["note"]
+    assert wikilinks("[[note#a heading|shown]]") == ["note"]
+    assert wikilinks("[[folder/note.md]]") == ["note"]
+
+
+def test_a_link_to_a_heading_in_this_note_targets_nothing():
+    assert wikilinks("see [[#below]]") == []
+
+
+def test_links_keep_their_order_without_repeats():
+    assert wikilinks("[[b]] then [[a]] then [[b]]") == ["b", "a"]
+
+
+def test_a_legacy_frontmatter_links_key_is_not_a_second_copy():
+    """The body is the only place links live. A `links:` key left over from a
+    hand-written file must not resurrect as a second, drifting source."""
+    m = parse(SAMPLE)
+    assert m.links == []
+    assert "links" not in m.to_markdown()
+
+
+def test_serialisation_never_writes_links_to_frontmatter():
+    m = create("a fact about [[something-else]]")
+    assert "links:" not in m.to_markdown()
+    assert "[[something-else]]" in m.to_markdown()
+
+
+def test_with_link_appends_once():
+    once = with_link("a fact", "other-note")
+    assert once.endswith("[[other-note]]")
+    assert with_link(once, "other-note") == once
+
+
+def test_with_link_keeps_the_prose_intact():
+    assert with_link("a fact\nover two lines", "x").startswith("a fact\nover two lines")
+
+
+def test_links_accumulate_on_one_line():
+    body = with_link(with_link("a fact", "first"), "second")
+    assert body == "a fact\n\n[[first]] [[second]]"
+
+
+def test_without_link_removes_it():
+    body = with_link("a fact", "other-note")
+    assert without_link(body, "other-note") == "a fact"
+
+
+def test_without_link_leaves_unknown_targets_alone():
+    body = with_link("a fact", "other-note")
+    assert without_link(body, "never-linked") == body
+
+
+def test_a_link_written_inside_a_sentence_is_not_duplicated():
+    body = "this follows from [[other-note]] directly"
+    assert with_link(body, "other-note") == body
+
+
+def test_a_link_written_inside_a_sentence_is_not_unlinked():
+    """Removing it would edit prose the user wrote, which is not what was asked."""
+    body = "this follows from [[other-note]] directly"
+    assert without_link(body, "other-note") == body
+
+
+def test_a_body_that_is_only_links_stays_whole():
+    assert without_link("[[a]] [[b]]", "a") == "[[a]] [[b]]"

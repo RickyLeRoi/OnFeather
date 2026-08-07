@@ -198,3 +198,162 @@ def test_search_with_no_usable_terms(store):
 def test_search_returns_nothing_for_misses(store):
     confirmed(store, "content")
     assert store.search("absent") == []
+
+
+# -- stable filenames -----------------------------------------------------
+
+
+def test_editing_does_not_rename_the_file(store):
+    """A `[[link]]` names a file. If correcting a memory renamed it, every link
+    pointing at it would break — and correcting memories is the whole product."""
+    memory = create("Riccardo prefers Apache licences")
+    first = store.save(memory)
+
+    memory.edit("Riccardo prefers the MIT licence after all")
+    assert store.save(memory).name == first.name
+    assert first.exists()
+
+
+def test_changing_status_keeps_the_filename(store):
+    memory = create("a fact")
+    first = store.save(memory)
+    memory.confirm()
+
+    moved = store.save(memory)
+    assert moved.name == first.name
+    assert moved.parent.name == "confirmed"
+
+
+def test_a_hand_chosen_filename_survives(store):
+    """Renaming a note in Obsidian updates the links pointing at it. Renaming it
+    back on the next write would undo that silently."""
+    memory = create("a fact")
+    original = store.save(memory)
+    renamed = original.with_name("my-own-name.md")
+    original.rename(renamed)
+
+    reloaded = store.get(memory.id)
+    reloaded.edit("a corrected fact")
+    assert store.save(reloaded).name == "my-own-name.md"
+
+
+# -- links ----------------------------------------------------------------
+
+
+def test_links_resolve_by_filename(store):
+    target = confirmed(store, "the licence decision")
+    source = confirmed(store, f"a fact, see [[{target.path.stem}]]")
+
+    assert store.resolve(target.path.stem).id == target.id
+    assert store.links(source)[0][1].id == target.id
+
+
+def test_links_resolve_by_id_and_by_prefix(store):
+    target = confirmed(store, "the licence decision")
+    assert store.resolve(target.id).id == target.id
+    assert store.resolve(target.id[:6]).id == target.id
+
+
+def test_link_resolution_ignores_case_in_filenames(store):
+    target = confirmed(store, "the licence decision")
+    assert store.resolve(target.path.stem.upper()).id == target.id
+
+
+def test_an_unresolved_link_is_reported_not_dropped(store):
+    """A dangling link marks a memory worth writing."""
+    source = confirmed(store, "a fact, see [[nothing-here]]")
+    assert store.links(source) == [("nothing-here", None)]
+
+
+def test_backlinks_find_what_points_here(store):
+    target = confirmed(store, "the licence decision")
+    source = confirmed(store, f"a fact, see [[{target.path.stem}]]")
+
+    assert [m.id for m in store.backlinks(target)] == [source.id]
+    assert store.backlinks(source) == []
+
+
+def test_a_memory_does_not_link_to_itself(store):
+    memory = confirmed(store, "a fact")
+    memory.edit(f"a fact, see [[{memory.path.stem}]]")
+    store.save(memory)
+
+    assert store.backlinks(store.get(memory.id)) == []
+
+
+# -- search along links ---------------------------------------------------
+
+
+def test_search_reaches_a_neighbour_that_does_not_match(store):
+    """The point of linking: a memory with none of the query's words comes back
+    because something that did match points at it."""
+    neighbour = confirmed(store, "the whole team moved to Berlin")
+    confirmed(store, f"Riccardo prefers Apache licences [[{neighbour.path.stem}]]")
+
+    found = {hit.memory.id: hit for hit in store.search("apache")}
+    assert neighbour.id in found
+    assert found[neighbour.id].via is not None
+
+
+def test_a_backlink_is_followed_too(store):
+    """Being linked *from* a hit is as good a lead as linking to one."""
+    neighbour = confirmed(store, "the whole team moved to Berlin")
+    match = confirmed(store, "Riccardo prefers Apache licences")
+    neighbour.edit(f"the whole team moved to Berlin [[{match.path.stem}]]")
+    store.save(neighbour)
+
+    assert neighbour.id in {hit.memory.id for hit in store.search("apache")}
+
+
+def test_a_neighbour_never_outranks_what_pulled_it_in(store):
+    neighbour = confirmed(store, "the whole team moved to Berlin")
+    match = confirmed(store, f"Riccardo prefers Apache licences [[{neighbour.path.stem}]]")
+
+    hits = store.search("apache")
+    assert hits[0].memory.id == match.id
+    assert hits[0].via is None
+
+
+def test_a_direct_match_is_never_reported_as_a_link_result(store):
+    """It matched on its own; saying otherwise would misexplain the result."""
+    weak = confirmed(store, "apache")
+    confirmed(store, f"Riccardo prefers Apache licences and apache things [[{weak.path.stem}]]")
+
+    by_id = {hit.memory.id: hit for hit in store.search("apache licences")}
+    assert by_id[weak.id].via is None
+
+
+def test_links_do_not_leak_unreviewed_memories_into_search(store):
+    """A proposal must not reach an answer by being linked from a confirmed one."""
+    unreviewed = create("unreviewed but linked")
+    store.save(unreviewed)
+    confirmed(store, f"Riccardo prefers Apache licences [[{unreviewed.path.stem}]]")
+
+    assert unreviewed.id not in {hit.memory.id for hit in store.search("apache")}
+
+
+def test_traversal_stops_after_one_hop(store):
+    far = confirmed(store, "something entirely unrelated")
+    near = confirmed(store, f"the whole team moved to Berlin [[{far.path.stem}]]")
+    confirmed(store, f"Riccardo prefers Apache licences [[{near.path.stem}]]")
+
+    found = {hit.memory.id for hit in store.search("apache")}
+    assert near.id in found
+    assert far.id not in found
+
+
+def test_following_links_can_be_turned_off(store):
+    neighbour = confirmed(store, "the whole team moved to Berlin")
+    confirmed(store, f"Riccardo prefers Apache licences [[{neighbour.path.stem}]]")
+
+    hits = store.search("apache", follow_links=False)
+    assert [hit.memory.id for hit in hits] != []
+    assert neighbour.id not in {hit.memory.id for hit in hits}
+
+
+def test_the_limit_still_holds_with_links(store):
+    for index in range(5):
+        neighbour = confirmed(store, f"unrelated neighbour {index}")
+        confirmed(store, f"shared term {index} [[{neighbour.path.stem}]]")
+
+    assert len(store.search("shared", limit=3)) == 3
