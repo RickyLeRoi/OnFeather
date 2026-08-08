@@ -530,16 +530,38 @@ def test_the_gateway_waits_ten_minutes_for_a_provider():
     assert client_module.DEFAULT_TIMEOUT == 600.0
 
 
-def test_the_server_never_times_out_a_request_of_its_own_accord():
-    """`timeout` on the handler would close the socket under a slow provider."""
-    from onfeather_free.server import Handler
+def test_the_handler_timeout_bounds_silence_not_the_provider():
+    """`timeout` is a socket timeout, so it measures silence on this socket only."""
+    from onfeather_free.server import IDLE_TIMEOUT_SECONDS, Handler
 
-    assert getattr(Handler, "timeout", None) is None
+    assert Handler.timeout == IDLE_TIMEOUT_SECONDS
 
 
 def test_a_slow_provider_still_reaches_the_caller(gateway):
     def responder(_request: httpx.Request) -> httpx.Response:
         time.sleep(1.5)
+        return httpx.Response(200, json={"choices": [{"message": {
+            "role": "assistant", "content": "eventually"}}]})
+
+    gate = gateway(responder)
+    response = gate.post({"messages": [{"role": "user", "content": "hi"}]})
+
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == "eventually"
+
+
+def test_a_provider_slower_than_the_socket_timeout_still_reaches_the_caller(gateway, monkeypatch):
+    """The reason the handler had no timeout at all, tested instead of assumed.
+
+    Nothing reads or writes this socket while the provider thinks, so a socket
+    timeout shorter than the provider's answer does not cut the request.
+    """
+    from onfeather_free.server import Handler
+
+    monkeypatch.setattr(Handler, "timeout", 0.5)
+
+    def responder(_request: httpx.Request) -> httpx.Response:
+        time.sleep(2.0)
         return httpx.Response(200, json={"choices": [{"message": {
             "role": "assistant", "content": "eventually"}}]})
 

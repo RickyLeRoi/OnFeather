@@ -91,6 +91,53 @@ def test_unified_memory_gpu_is_not_counted(model):
     assert plan.hot_on_cpu
 
 
+def occupied_profile(total_gib: float, free_gib: float | None):
+    """A card whose free VRAM is measured separately from its size."""
+    profile = make_profile(vram_gib=total_gib)
+    gpu = profile.gpus[0]
+    profile.gpus[0] = GpuInfo(
+        name=gpu.name,
+        vendor=gpu.vendor,
+        total_bytes=gpu.total_bytes,
+        free_bytes=None if free_gib is None else int(free_gib * GIB),
+        unified_memory=False,
+    )
+    return profile
+
+
+def test_a_full_gpu_is_measured_not_assumed(model):
+    """Zero free is a measurement. Planning against the whole card from it is the
+    one failure this tool exists to prevent."""
+    plan = make_plan(model, occupied_profile(total_gib=16.0, free_gib=0.0))
+    assert plan.hot_on_cpu
+
+
+def test_unmeasured_free_vram_still_plans_against_the_card(model):
+    """None means nobody looked, which is different from looking and finding nothing."""
+    plan = make_plan(model, occupied_profile(total_gib=16.0, free_gib=None))
+    assert not plan.hot_on_cpu
+
+
+def test_the_biggest_gpu_is_the_one_with_the_most_free_vram(model):
+    """A busy 16 GiB card must not outrank an idle 8 GiB one."""
+    profile = occupied_profile(total_gib=16.0, free_gib=0.0)
+    profile.gpus.append(
+        GpuInfo(name="idle", vendor="nvidia", total_bytes=8 * GIB, free_bytes=8 * GIB)
+    )
+    plan = make_plan(model, profile)
+    assert not plan.hot_on_cpu
+
+
+def test_planning_on_a_shared_gpu_says_so(model, capsys):
+    make_plan(model, occupied_profile(total_gib=16.0, free_gib=4.0))
+    assert "something else" in capsys.readouterr().err
+
+
+def test_planning_on_an_idle_gpu_stays_quiet(model, capsys):
+    make_plan(model, make_profile(vram_gib=16.0))
+    assert capsys.readouterr().err == ""
+
+
 def test_reserve_is_held_back(model):
     generous = make_plan(model, make_profile(vram_gib=4.0), reserve_bytes=0)
     cautious = make_plan(model, make_profile(vram_gib=4.0), reserve_bytes=1 * GIB)

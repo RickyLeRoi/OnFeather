@@ -54,6 +54,10 @@ def build_parser() -> argparse.ArgumentParser:
     providers = subcommands.add_parser("providers", help="list the registry")
     providers.set_defaults(handler=_cmd_providers)
 
+    reset = subcommands.add_parser("reset", help="clear lockouts and usage for a provider")
+    reset.add_argument("provider", nargs="?", help="provider name (default: every provider)")
+    reset.set_defaults(handler=_cmd_reset)
+
     chat = subcommands.add_parser("chat", help="send one prompt through the router")
     chat.add_argument("prompt", help="the message to send")
     chat.add_argument("--capability", default="chat")
@@ -168,7 +172,10 @@ def _cmd_status(args: argparse.Namespace) -> int:
         if not known:
             label, headroom = "no key", "-"
         elif state.locked_until:
-            label, headroom = "rate limited", "0%"
+            # 20260808 ** RG #Security "rate limited" alone hides whether it is 60s or thirty years.
+            wait = state.locked_until - now.timestamp()
+            label = f"locked {_duration(wait)}" if wait > 0 else "ready"
+            headroom = "0%"
         elif state.available:
             label, headroom = "ready", f"{state.headroom:.0%}"
         else:
@@ -183,7 +190,34 @@ def _cmd_status(args: argparse.Namespace) -> int:
         print(f"{provider.label:<22}{label:<14}{headroom:<12}{detail or '—'}")
 
     print("\n* = confirmed by the provider's own rate-limit headers")
+    if any(state.locked_until for _provider, state, known in rows if known):
+        print("  a lockout that will not clear: of-free reset <provider>")
     ledger.close()
+    return 0
+
+
+def _duration(seconds: float) -> str:
+    """Compact wait, so a lockout says whether it is a minute or a lifetime."""
+    if seconds < 90:
+        return f"{int(seconds)}s"
+    if seconds < 5400:
+        return f"{int(seconds // 60)}m"
+    if seconds < 172800:
+        return f"{int(seconds // 3600)}h"
+    return f"{int(seconds // 86400)}d"
+
+
+def _cmd_reset(args: argparse.Namespace) -> int:
+    """Undo a lockout. The way back from a provider that asked for thirty years."""
+    registry = registry_module.load(args.registry)
+    if args.provider and args.provider not in registry.providers:
+        print(f"error: unknown provider {args.provider!r}", file=sys.stderr)
+        return 1
+
+    ledger = Ledger(args.ledger)
+    ledger.clear(args.provider)
+    ledger.close()
+    print(f"cleared {args.provider or 'every provider'}")
     return 0
 
 

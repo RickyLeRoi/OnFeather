@@ -125,7 +125,7 @@ def parse(text: str, path: Path | None = None) -> Memory:
         created=_as_date(meta.get("created")),
         updated=_as_date(meta.get("updated")),
         source=str(meta.get("source", "")),
-        confidence=float(meta.get("confidence", 1.0)),
+        confidence=_as_confidence(meta.get("confidence", 1.0)),
         tags=_as_list(meta.get("tags")),
         path=path,
     )
@@ -252,6 +252,23 @@ def _as_date(value: object) -> date | None:
         except ValueError:
             return None
     return None
+
+
+def _as_confidence(value: object, default: float = 1.0) -> float:
+    """Confidence from a hand-edited file. Anything unreadable falls back.
+
+    These files are meant to be edited by hand and kept in git, so a malformed
+    optional field is an ordinary event rather than an exceptional one. It gets
+    a default; it does not get to take the whole store down with it.
+    """
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    # 20260808 ** RG #Security NaN loses every comparison and poisons the search ranking.
+    if number != number:
+        return default
+    return min(max(number, 0.0), 1.0)
 
 
 def _as_list(value: object) -> list[str]:

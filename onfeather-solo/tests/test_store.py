@@ -70,6 +70,41 @@ def test_malformed_files_are_skipped(store):
     assert len(store.all()) == 1
 
 
+def test_a_non_numeric_confidence_does_not_break_the_store(store):
+    """These files are edited by hand, so `confidence: alta` is an ordinary
+    event. It used to raise ValueError out of every single command."""
+    store.save(create("a good one"))
+    hand_edited = store.root / "proposed" / "hand-edited.md"
+    hand_edited.write_text(
+        "---\nid: abc123\ntype: fact\nstatus: proposed\nconfidence: alta\n---\n\nscritto a mano\n"
+    )
+
+    memories = store.all()
+    assert len(memories) == 2
+    assert all(0.0 <= memory.confidence <= 1.0 for memory in memories)
+
+
+def test_a_nan_confidence_never_reaches_the_ranking(store):
+    """NaN loses every comparison, so one file would scramble the whole sort."""
+    nan = store.root / "confirmed" / "nan.md"
+    nan.parent.mkdir(parents=True, exist_ok=True)
+    nan.write_text(
+        "---\nid: def456\ntype: fact\nstatus: confirmed\nconfidence: .nan\n---\n\nmarmellata\n"
+    )
+
+    confidence = store.all()[0].confidence
+    assert confidence == confidence
+
+
+def test_a_skipped_file_says_which_one(store, capsys):
+    """A fact that vanishes without explanation is worse than a visible error."""
+    (store.root / "proposed").mkdir(parents=True, exist_ok=True)
+    (store.root / "proposed" / "broken.md").write_text("no frontmatter here")
+
+    store.all()
+    assert "broken.md" in capsys.readouterr().err
+
+
 def test_get_accepts_an_unambiguous_prefix(store):
     memory = create("unique content here")
     store.save(memory)
@@ -89,6 +124,50 @@ def test_delete_removes_the_file(store):
 
 def test_empty_store_lists_nothing(store):
     assert store.all() == []
+
+
+# -- the cost of adding ---------------------------------------------------
+
+
+def test_adding_does_not_reparse_the_store_every_time(store, monkeypatch):
+    """`learn` adds thousands of memories in one run. Asking each time whether
+    the id was known used to re-parse everything on disk, twice: 200 adds cost
+    39,800 file parses and 25 seconds."""
+    parses = []
+    original = type(store)._read
+    monkeypatch.setattr(
+        type(store), "_read",
+        lambda self, path: (parses.append(path), original(self, path))[1],
+    )
+
+    for index in range(50):
+        store.add(create(f"fact number {index}"))
+
+    assert len(parses) == 0
+    assert len(store.all()) == 50
+
+
+def test_a_memory_added_this_run_is_found_by_the_next_add(store):
+    """The index has to follow the writes, or `add` stops being idempotent."""
+    store.all()
+    memory = create("said once")
+    store.add(memory)
+    _stored, is_new = store.add(create("said once"))
+    assert not is_new
+
+
+def test_a_deleted_memory_leaves_the_index(store):
+    memory = create("temporary")
+    store.add(memory)
+    store.delete(memory)
+    assert store.get(memory.id) is None
+
+
+def test_saving_leaves_no_partial_file_behind(store):
+    """Sixteen-hour runs get interrupted, and a truncated file is a corrupt fact."""
+    store.save(create("written atomically"))
+    assert list(store.root.rglob("*.tmp")) == []
+    assert len(store.all()) == 1
 
 
 # -- counts ---------------------------------------------------------------

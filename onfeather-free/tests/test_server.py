@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import threading
 
 import httpx
@@ -178,7 +179,7 @@ def test_private_request_reaches_a_local_provider(live):
 def test_provider_prefix_is_recognised(live):
     _, router = live
     _capability, _private, pinned = router.resolve("fastcloud/fast-70b")
-    assert pinned == "fastcloud"
+    assert pinned == ("fastcloud", "fast-70b")
 
 
 def test_unknown_prefix_falls_back_to_routing(live):
@@ -467,6 +468,251 @@ def test_a_refused_content_type_leaves_the_connection_usable(live):
             headers={"Content-Type": "application/json"},
         )
         assert served.status_code == 200, "the refused body poisoned the connection"
+
+
+# -- unvalidated input ----------------------------------------------------
+
+
+def test_a_non_ascii_key_is_refused_rather_than_fatal(guarded):
+    """`hmac.compare_digest` raises TypeError on a str with any non-ASCII byte.
+    That turned an unauthenticated 401 into a dead handler thread."""
+    base, _ = guarded
+    response = httpx.get(
+        f"{base}/v1/status", headers={"Authorization": "Bearer é".encode()}, timeout=10
+    )
+    assert response.status_code == 401
+
+
+def test_a_non_ascii_key_leaves_the_server_answering(guarded):
+    base, _ = guarded
+    httpx.get(f"{base}/v1/status", headers={"Authorization": "Bearer é".encode()}, timeout=10)
+    assert httpx.get(f"{base}/health", timeout=10).status_code == 200
+
+
+def test_a_non_ascii_key_still_authenticates_its_owner(live):
+    """Comparing as bytes must not break the key it was meant to compare: the
+    header arrives latin-1, the configured key is held as text."""
+    base, router = live
+    router.api_key = "sk-perché-café"
+
+    response = httpx.get(
+        f"{base}/v1/status",
+        headers={"Authorization": "Bearer sk-perché-café".encode()},
+        timeout=10,
+    )
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize("body", ["[]", '"hello"', "42", "null"])
+def test_a_json_body_that_is_not_an_object_is_a_400(live, body):
+    """Valid JSON with no `.get()` on it. `[]` is not even malicious."""
+    base, _ = live
+    response = httpx.post(
+        f"{base}/v1/chat/completions", content=body,
+        headers={"Content-Type": "application/json"}, timeout=10,
+    )
+    assert response.status_code == 400
+
+
+def test_a_model_that_is_not_a_string_is_routed_not_fatal(live):
+    """`model` arrives from JSON, so it can be a dict, a number or null."""
+    base, _ = live
+    response = post(base, {"model": {"a": 1}, "messages": [{"role": "user", "content": "hi"}]})
+    assert response.status_code == 200
+
+
+def test_an_unforeseen_failure_answers_json_instead_of_resetting(live, monkeypatch):
+    """A network server must never let an exception reach the socket: a reset is
+    what agentic clients read as 'retry', against a server that keeps dying."""
+    base, router = live
+    monkeypatch.setattr(
+        type(router), "models", lambda self: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+
+    response = httpx.get(f"{base}/v1/models", timeout=10)
+    assert response.status_code == 500
+    assert response.json()["error"]["type"] == "internal_error"
+    assert "boom" not in response.text, "the traceback belongs in the log, not on the wire"
+
+
+# -- body and connection limits -------------------------------------------
+
+
+def raw_post(base: str, headers: str, body: bytes = b"") -> str:
+    """A POST no HTTP client would let us build, because the point is the lie in
+    `Content-Length`: a client that refuses to send it cannot test the defence."""
+    host, port = base.removeprefix("http://").split(":")
+    with socket.create_connection((host, int(port)), timeout=10) as sock:
+        sock.sendall(
+            f"POST /v1/chat/completions HTTP/1.1\r\nHost: {host}\r\n{headers}\r\n\r\n".encode()
+            + body
+        )
+        sock.settimeout(10)
+        received = b""
+        while b"\r\n\r\n" not in received:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            received += chunk
+    return received.decode("latin-1")
+
+
+def test_an_oversized_body_is_refused_on_its_declared_length(live):
+    """Refused on Content-Length, before a byte of those gigabytes is read."""
+    from onfeather_free.server import MAX_BODY_BYTES
+
+    base, _ = live
+    reply = raw_post(
+        base,
+        f"Content-Type: application/json\r\nContent-Length: {MAX_BODY_BYTES + 1}",
+    )
+    assert "413" in reply.split("\r\n")[0]
+
+
+def test_an_oversized_body_is_refused_before_authentication_reads_it(guarded):
+    """`_unauthorised` drains the body so keep-alive stays in sync, which made
+    the API key no defence at all against an anonymous multi-gigabyte body."""
+    from onfeather_free.server import MAX_BODY_BYTES
+
+    base, _ = guarded
+    reply = raw_post(
+        base,
+        f"Content-Type: application/json\r\nContent-Length: {MAX_BODY_BYTES * 100}",
+    )
+    assert "401" in reply.split("\r\n")[0]
+
+
+def test_an_unreadable_content_length_hangs_up_instead_of_desyncing(live):
+    """Bytes left in the buffer of a keep-alive connection become the next
+    request line — request smuggling the moment a reverse proxy is in front."""
+    base, _ = live
+    reply = raw_post(base, "Content-Type: application/json\r\nContent-Length: banana", b"{}")
+    assert "400" in reply.split("\r\n")[0]
+    assert "close" in reply.lower()
+
+
+def test_a_chunked_body_is_refused_rather_than_read_as_zero_bytes(live):
+    """Unsupported and unread is a desync: the body becomes the next request line."""
+    def chunks():
+        yield json.dumps({"messages": [{"role": "user", "content": "hi"}]}).encode()
+
+    base, _ = live
+    with httpx.Client(timeout=10) as connection:
+        response = connection.post(
+            f"{base}/v1/chat/completions", content=chunks(),
+            headers={"Content-Type": "application/json"},
+        )
+    assert response.status_code == 400
+
+
+def test_the_server_stops_opening_threads_at_the_ceiling(live):
+    """One connection is one thread and one descriptor, both free to open before
+    anything is authenticated."""
+    from onfeather_free.server import MAX_CONNECTIONS
+
+    base, _ = live
+    host, port = base.removeprefix("http://").split(":")
+
+    held = []
+    try:
+        for _ in range(MAX_CONNECTIONS + 8):
+            sock = socket.create_connection((host, int(port)), timeout=5)
+            held.append(sock)
+        # 20260808 ** RG #Security Past the ceiling the accept loop hangs up instead of spawning.
+        assert threading.active_count() < MAX_CONNECTIONS + 20
+    finally:
+        for sock in held:
+            sock.close()
+
+    assert httpx.get(f"{base}/health", timeout=10).status_code == 200
+
+
+# -- sessions -------------------------------------------------------------
+
+
+def test_sessions_are_bounded(live):
+    """The key can come from the caller, so an unbounded map is an unbounded
+    allocation an anonymous request can drive."""
+    from onfeather_free.server import Sessions
+
+    sessions = Sessions(capacity=4)
+    for index in range(50):
+        sessions.remember(f"key-{index}", "fastcloud", "fast-70b")
+
+    assert len(sessions._pins) == 4
+    assert sessions.get("key-0") is None
+    assert sessions.get("key-49") == ("fastcloud", "fast-70b")
+
+
+def test_an_expired_pin_is_forgotten(live):
+    from onfeather_free.server import Sessions
+
+    sessions = Sessions(ttl=-1.0)
+    sessions.remember("key", "fastcloud", "fast-70b")
+    assert sessions.get("key") is None
+
+
+def test_a_caller_supplied_session_id_is_truncated(live):
+    """It lands in a map and comes back in a response header."""
+    from onfeather_free.server import MAX_SESSION_KEY_CHARS, session_key
+
+    key = session_key({}, {"X-OnFeather-Session": "x" * 10_000})
+    assert len(key) == MAX_SESSION_KEY_CHARS
+
+
+def test_a_reused_pin_stays_alive_under_the_cap(live):
+    from onfeather_free.server import Sessions
+
+    sessions = Sessions(capacity=2)
+    sessions.remember("keep", "fastcloud", "fast-70b")
+    sessions.remember("other", "fastcloud", "fast-70b")
+    sessions.get("keep")
+    sessions.remember("newest", "fastcloud", "fast-70b")
+
+    assert sessions.get("keep") is not None
+    assert sessions.get("other") is None
+
+
+# -- explicit pins --------------------------------------------------------
+
+
+def test_a_pinned_pair_is_the_one_that_serves(live):
+    base, _ = live
+    body = post(base, {
+        "model": "bigcontext/big-flash",
+        "messages": [{"role": "user", "content": "hi"}],
+    }).json()
+    assert body["model"] == "bigcontext/big-flash"
+
+
+def test_a_local_pin_never_leaves_the_machine(live):
+    """Naming a local model is the user saying this must stay here. The free tier
+    of at least one configured provider trains on prompts."""
+    base, router = live
+    remote = []
+    router.client = Client(
+        router.registry, router.ledger,
+        transport=upstream(lambda request: remote.append(str(request.url)) or ok(request)),
+    )
+
+    body = post(base, {
+        "model": "ollama/qwen2.5:7b",
+        "messages": [{"role": "user", "content": "segreto"}],
+    }).json()
+
+    assert body["model"] == "ollama/qwen2.5:7b"
+    assert all("localhost" in url or "127.0.0.1" in url for url in remote), remote
+
+
+def test_an_impossible_pin_fails_rather_than_routing_elsewhere(live):
+    base, _ = live
+    response = post(base, {
+        "model": "fastcloud/model-that-does-not-exist",
+        "messages": [{"role": "user", "content": "hi"}],
+    })
+
+    assert response.status_code == 503
+    assert "fastcloud/model-that-does-not-exist" in response.json()["error"]["message"]
 
 
 def test_serving_off_loopback_without_a_key_refuses_to_start(registry):

@@ -8,6 +8,9 @@ are rare and slow in reality are ordinary and instant here.
 from __future__ import annotations
 
 import json
+import time
+from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
 
 import httpx
 import pytest
@@ -186,6 +189,43 @@ def test_retry_after_sets_the_cooldown(registry, ledger, environ):
     failed = result.attempts[0].provider
     status = ledger.status(registry[failed], NOW)
     assert status.locked_until is not None
+
+
+def cooldown_for(registry, ledger, environ, retry_after: str) -> float:
+    """How long a 429 carrying this `retry-after` sidelines the provider."""
+    def handler(request):
+        if not handler.done:
+            handler.done = True
+            return httpx.Response(429, headers={"retry-after": retry_after}, json={})
+        return httpx.Response(200, json=completion_body())
+
+    handler.done = False
+    result = send(client(registry, ledger, handler), environ)
+    failed = result.attempts[0].provider
+    return ledger.status(registry[failed], NOW).locked_until - time.time()
+
+
+def test_an_absurd_retry_after_is_capped(registry, ledger, environ):
+    """Milliseconds where seconds were meant is the commonest bug in this header,
+    and the ledger persists lockouts: uncapped, one 429 retires a provider for
+    thirty years, across restarts, with nothing able to undo it."""
+    from onfeather_free.client import MAX_COOLDOWN_SECONDS
+
+    assert cooldown_for(registry, ledger, environ, "999999999") <= MAX_COOLDOWN_SECONDS + 1
+
+
+def test_a_retry_after_date_is_honoured_rather_than_dropped(registry, ledger, environ):
+    """The RFC admits an HTTP date, which float() silently discarded."""
+    when = datetime.now(timezone.utc) + timedelta(seconds=600)
+    seconds = cooldown_for(registry, ledger, environ, format_datetime(when, usegmt=True))
+    assert 500 < seconds < 700
+
+
+def test_an_unreadable_retry_after_falls_back_to_the_default(registry, ledger, environ):
+    from onfeather_free.client import DEFAULT_COOLDOWN_SECONDS
+
+    seconds = cooldown_for(registry, ledger, environ, "soon please")
+    assert abs(seconds - DEFAULT_COOLDOWN_SECONDS) < 5
 
 
 def test_server_errors_fail_over(registry, ledger, environ):

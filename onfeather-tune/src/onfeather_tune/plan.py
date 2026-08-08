@@ -16,14 +16,18 @@ The plan is emitted as `-ot` regexes, which llama.cpp applies backend-agnostical
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 
 from .estimate import DecodeEstimate, decode_estimate, kv_cache_bytes
 from .gguf import HOT_ROLES, GGUFModel, TensorRole
-from .model import HardwareProfile
+from .model import GpuInfo, HardwareProfile
 
 #: 20260725 RG VRAM beyond weights and KV cache: compute buffers, context, fragmentation.
 DEFAULT_RESERVE_BYTES = 512 * 1024**2
+
+#: 20260808 ** RG #Security Below this share of the card, someone else is holding the rest.
+OCCUPIED_GPU_SHARE = 0.9
 
 #: 20260725 RG Expert tensor types, in the order we give them up.
 EXPERT_SURRENDER_ORDER = ("gate", "up", "down")
@@ -236,6 +240,18 @@ def _recommended_threads(profile: HardwareProfile) -> int | None:
     return allowed
 
 
+def _capacity(gpu: GpuInfo) -> int:
+    """VRAM to plan against. Zero free is a measurement, not a missing value.
+
+    `free_bytes or total_bytes` read a fully occupied GPU as an unmeasured one
+    and planned against the whole card, which is an OOM every time on the
+    shared, rented hardware this tool is aimed at.
+    """
+    if gpu.free_bytes is not None:
+        return gpu.free_bytes
+    return gpu.total_bytes or 0
+
+
 def _usable_vram(profile: HardwareProfile, reserve_bytes: int) -> int:
     """VRAM we are willing to fill on the largest usable GPU.
 
@@ -247,8 +263,17 @@ def _usable_vram(profile: HardwareProfile, reserve_bytes: int) -> int:
     if not candidates:
         return 0
 
-    best = max(candidates, key=lambda gpu: gpu.free_bytes or gpu.total_bytes or 0)
-    capacity = best.free_bytes or best.total_bytes or 0
+    best = max(candidates, key=_capacity)
+    capacity = _capacity(best)
+
+    if best.total_bytes and capacity < best.total_bytes * OCCUPIED_GPU_SHARE:
+        # 20260808 ** RG #Security Something else holds the card; the plan lasts only while it does.
+        print(
+            f"note: planning against {capacity / 1024**3:.2f} GiB free of "
+            f"{best.total_bytes / 1024**3:.2f} GiB on {best.name} — something else "
+            f"holds the rest, and this plan is only valid while that stays true",
+            file=sys.stderr,
+        )
     return capacity - reserve_bytes
 
 

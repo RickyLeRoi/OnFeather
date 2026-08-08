@@ -11,7 +11,7 @@ import pytest
 
 from onfeather_free import cli
 
-SUBCOMMANDS = ["status", "route", "providers", "chat", "serve"]
+SUBCOMMANDS = ["status", "route", "providers", "chat", "serve", "reset"]
 
 
 def parse(argv: list[str]):
@@ -79,3 +79,37 @@ def test_invalid_strategy_is_rejected():
     with pytest.raises(SystemExit) as caught:
         cli.main(["route", "--strategy", "vibes"])
     assert caught.value.code != 0
+
+
+# -- reset ----------------------------------------------------------------
+
+
+def test_reset_clears_a_lockout(tmp_path, capsys):
+    """The way back from a provider that asked to be left alone for thirty years.
+    Before this, the only cure was deleting the database by hand."""
+    from datetime import datetime, timezone
+
+    from onfeather_free import registry as registry_module
+    from onfeather_free.budget import Ledger
+
+    database = tmp_path / "free.db"
+    registry = registry_module.load(None)
+    name = next(iter(registry.providers))
+
+    ledger = Ledger(database)
+    ledger.lock_out(name, until=2_000_000_000.0, reason="429")
+    ledger.close()
+
+    assert cli.main(["--ledger", str(database), "reset", name]) == 0
+
+    ledger = Ledger(database)
+    locked = ledger.status(registry[name], datetime.now(timezone.utc)).locked_until
+    ledger.close()
+    assert locked is None
+    assert name in capsys.readouterr().out
+
+
+def test_reset_refuses_a_provider_it_does_not_know(tmp_path, capsys):
+    code = cli.main(["--ledger", str(tmp_path / "free.db"), "reset", "nonesuch"])
+    assert code == 1
+    assert "nonesuch" in capsys.readouterr().err

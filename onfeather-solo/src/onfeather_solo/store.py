@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -43,6 +45,7 @@ class Store:
 
     def __init__(self, root: str | Path = DEFAULT_ROOT) -> None:
         self.root = Path(root)
+        self._cache: dict[str, Memory] | None = None
 
     def path_for(self, memory: Memory) -> Path:
         """Where a memory belongs: its own filename, under its status.
@@ -61,11 +64,17 @@ class Store:
         """Write a memory, moving it if its status changed."""
         target = self.path_for(memory)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(memory.to_markdown(), encoding="utf-8")
+
+        # 20260808 ** RG #Security Atomic: an interrupted write_text truncates the fact itself.
+        temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+        temporary.write_text(memory.to_markdown(), encoding="utf-8")
+        os.replace(temporary, target)
 
         if memory.path and memory.path.resolve() != target.resolve() and memory.path.exists():
             memory.path.unlink()
         memory.path = target
+        if self._cache is not None:
+            self._cache[memory.id] = memory
         return target
 
     def add(self, memory: Memory) -> tuple[Memory, bool]:
@@ -82,6 +91,8 @@ class Store:
     def delete(self, memory: Memory) -> None:
         if memory.path and memory.path.exists():
             memory.path.unlink()
+        if self._cache is not None:
+            self._cache.pop(memory.id, None)
 
     # -- reading ----------------------------------------------------------
 
@@ -125,17 +136,36 @@ class Store:
 
     def get(self, memory_id: str) -> Memory | None:
         """Look up by id, or by unambiguous prefix."""
-        matches = [m for m in self.all() if m.id == memory_id]
-        if matches:
-            return matches[0]
-        prefixed = [m for m in self.all() if m.id.startswith(memory_id)]
+        index = self._index()
+        exact = index.get(memory_id)
+        if exact is not None:
+            return exact
+        # 20260808 ** RG #Security One scan: this used to be two full all() passes.
+        prefixed = [m for identifier, m in index.items() if identifier.startswith(memory_id)]
         return prefixed[0] if len(prefixed) == 1 else None
+
+    def _index(self) -> dict[str, Memory]:
+        """Every memory by id, read once per process.
+
+        `learn` adds thousands of memories in one run and every add asked whether
+        the id was already known, which re-parsed the whole store twice: 200 adds
+        cost 39,800 file parses and 25 seconds before this existed.
+        """
+        if self._cache is None:
+            self._cache = {memory.id: memory for memory in self.all()}
+        return self._cache
+
+    def invalidate(self) -> None:
+        """Forget the index, for a caller that knows the directory changed underneath."""
+        self._cache = None
 
     def _read(self, path: Path) -> Memory | None:
         try:
             return parse(path.read_text(encoding="utf-8"), path=path)
-        except (OSError, MemoryError_):
+        except (OSError, MemoryError_, ValueError, TypeError) as error:
             # 20260725 RG A malformed file must not break the whole store.
+            # 20260808 ** RG #Security Said out loud: a fact vanishing in silence is worse.
+            print(f"warning: skipping {path.name}: {error}", file=sys.stderr)
             return None
 
     # -- links ------------------------------------------------------------

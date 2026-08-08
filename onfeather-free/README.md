@@ -24,6 +24,7 @@ Streaming is the significant thing still missing.
 | `of-free chat` | ✅ working | Send a prompt, failing over across providers automatically |
 | `of-free providers` | ✅ working | The registry, and what still needs a key |
 | `of-free serve` | ✅ working | OpenAI-compatible endpoint, so any client can point at it |
+| `of-free reset` | ✅ working | Clear a lockout and the recorded usage for one provider, or all |
 
 ## Isn't this LiteLLM?
 
@@ -144,7 +145,7 @@ Three model names are special:
 |---|---|
 | `auto` | Route across everything available |
 | `private` | Local only — never leaves the machine |
-| `provider/model` | Ask for one explicitly |
+| `provider/model` | That pair or nothing: no failover, and an error if it is unavailable |
 
 Every response carries `X-OnFeather-Provider`, `X-OnFeather-Model` and
 `X-OnFeather-Failovers`, so you can always see what actually served you.
@@ -310,8 +311,6 @@ are never stranded was the one guaranteed to fail.
   as ordinary rate limiting, so it is retried once per cooldown forever instead
   of being sidelined like a 402. Distinguishing them means reading the error
   body, which is provider-specific.
-- Model pinning is parsed but not enforced: `provider/model` is accepted and then
-  routed normally. Session pinning is enforced; that is a different mechanism.
 - **`tools` and `json_schema` in the registry are guesses like everything else
   there.** A model marked tool-capable that is not just fails the attempt and the
   next candidate serves it, but there is no header to reconcile against the way

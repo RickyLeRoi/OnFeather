@@ -16,11 +16,15 @@ client for anything it does not already send.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import hmac
 import json
 import threading
 import time
+import traceback
+from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -57,6 +61,22 @@ SESSION_HEADER = "X-OnFeather-Session"
 
 SESSION_TTL_SECONDS = 1800.0
 
+# 20260808 ** RG #Security Hard caps: the key comes from the caller, so the map is hostile.
+MAX_SESSIONS = 4096
+MAX_SESSION_KEY_CHARS = 128
+
+# 20260808 ** RG #Security A long agentic conversation fits in a few MB; past that it is an attack.
+MAX_BODY_BYTES = 32 * 1024 * 1024
+
+# 20260808 ** RG #Security How much is drained before a 401, after which we just hang up.
+DRAIN_LIMIT_BYTES = 64 * 1024
+
+# 20260808 ** RG #Security One thread and one descriptor per connection, so the count is ours.
+MAX_CONNECTIONS = 64
+
+# 20260808 ** RG #Security Slowloris budget: how long a socket may say nothing at all.
+IDLE_TIMEOUT_SECONDS = 60.0
+
 CHARS_PER_TOKEN = 4
 
 
@@ -68,32 +88,53 @@ class Sessions:
     first user message, and a different run has a different pair. It is a
     fingerprint rather than a guarantee — two identical runs share a pin, which
     costs nothing because they would want the same answer anyway.
+
+    Bounded by construction. The key can also arrive from the caller, so an
+    unbounded map is an unbounded allocation an anonymous request can drive, and
+    a full-scan expiry is a quadratic cost it can drive too.
     """
 
-    def __init__(self, ttl: float = SESSION_TTL_SECONDS) -> None:
+    def __init__(self, ttl: float = SESSION_TTL_SECONDS, capacity: int = MAX_SESSIONS) -> None:
         self.ttl = ttl
-        self._pins: dict[str, tuple[str, str, float]] = {}
+        self.capacity = capacity
+        self._pins: OrderedDict[str, tuple[str, str, float]] = OrderedDict()
         self._lock = threading.Lock()
 
     def get(self, key: str | None) -> tuple[str, str] | None:
         if not key:
             return None
         with self._lock:
-            self._expire()
             entry = self._pins.get(key)
-        return (entry[0], entry[1]) if entry else None
+            if entry is None:
+                return None
+            if entry[2] < time.time() - self.ttl:
+                del self._pins[key]
+                return None
+            self._pins.move_to_end(key)
+            return (entry[0], entry[1])
 
     def remember(self, key: str | None, provider: str, model: str) -> None:
         if not key:
             return
         with self._lock:
             self._pins[key] = (provider, model, time.time())
-            self._expire()
+            self._pins.move_to_end(key)
+            self._trim()
 
-    def _expire(self) -> None:
+    def _trim(self) -> None:
+        """Drop expired entries from the oldest end, then enforce the cap.
+
+        The oldest end is the only place an expired entry can be, so this is
+        O(1) amortised where a full scan was O(n) on every single request.
+        """
         cutoff = time.time() - self.ttl
-        for key in [k for k, entry in self._pins.items() if entry[2] < cutoff]:
-            del self._pins[key]
+        while self._pins:
+            oldest = next(iter(self._pins))
+            if self._pins[oldest][2] >= cutoff:
+                break
+            del self._pins[oldest]
+        while len(self._pins) > self.capacity:
+            self._pins.popitem(last=False)
 
 
 def session_key(payload: dict, headers: Any = None) -> str | None:
@@ -103,8 +144,9 @@ def session_key(payload: dict, headers: Any = None) -> str | None:
     construction and pinning it would hand it yesterday's model for no reason.
     """
     explicit = headers.get(SESSION_HEADER) if headers is not None else None
-    if explicit and explicit.strip():
-        return explicit.strip()
+    if isinstance(explicit, str) and explicit.strip():
+        # 20260808 ** RG #Security Truncated: this lands in a map and in a response header.
+        return explicit.strip()[:MAX_SESSION_KEY_CHARS]
 
     if not payload.get("tools"):
         return None
@@ -196,21 +238,22 @@ class Router:
                 })
         return listed
 
-    def resolve(self, requested: str) -> tuple[str, bool, str | None]:
-        """Map a requested model onto (capability, private, pinned provider).
+    def resolve(self, requested: object) -> tuple[str, bool, tuple[str, str] | None]:
+        """Map a requested model onto (capability, private, pinned pair).
 
         Three shapes are accepted: `auto` to let the router decide, `private` to
         force a local model, and `provider/model` to pin one explicitly.
         """
-        name = (requested or "").strip()
+        # 20260808 ** RG #Security `model` arrives from JSON: it can be a dict, a number, null.
+        name = requested.strip() if isinstance(requested, str) else ""
         if name.lower() in PRIVATE_MODEL_ALIASES:
             return "chat", True, None
         if name.lower() in AUTO_MODEL_ALIASES:
             return "chat", False, None
         if "/" in name:
-            provider_name = name.split("/", 1)[0]
-            if provider_name in self.registry.providers:
-                return "chat", False, provider_name
+            provider_name, model_id = name.split("/", 1)
+            if provider_name in self.registry.providers and model_id:
+                return "chat", False, (provider_name, model_id)
         # 20260725 RG Unknown name: route it rather than refuse.
         return "chat", False, None
 
@@ -242,6 +285,12 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "onfeather-free"
 
+    # 20260808 ** RG #Security A socket that says nothing must not hold a thread for ever.
+    timeout = IDLE_TIMEOUT_SECONDS
+
+    # 20260808 ** RG #Security Whether this request already has an answer on the wire.
+    _replied = False
+
     # -- plumbing ---------------------------------------------------------
 
     def log_message(self, fmt: str, *args: Any) -> None:
@@ -250,9 +299,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send(self, status: int, payload: dict, *, extra: dict | None = None) -> None:
         body = json.dumps(payload).encode()
+        self._replied = True
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        if self.close_connection:
+            # 20260808 ** RG #Security Announce the hang-up: a silent close is a desync of its own.
+            self.send_header("Connection", "close")
         for key, value in (extra or {}).items():
             self.send_header(key, str(value))
         self.end_headers()
@@ -280,6 +333,11 @@ class Handler(BaseHTTPRequestHandler):
         as it did before. When one is set it travels in `Authorization: Bearer`,
         which every OpenAI client already sends and every user already expects
         to fill in.
+
+        Compared as bytes, in the encodings the two sides actually arrived in:
+        headers reach us decoded as latin-1, the key is held as text. As `str`,
+        `compare_digest` raised TypeError on any non-ASCII byte, which turned an
+        unauthenticated 401 into a dead handler thread.
         """
         expected = self.router.api_key
         if not expected or path in PUBLIC_PATHS:
@@ -288,7 +346,11 @@ class Handler(BaseHTTPRequestHandler):
         offered = (self.headers.get("Authorization") or "").strip()
         if offered[:7].lower() == "bearer ":
             offered = offered[7:].strip()
-        return bool(offered) and hmac.compare_digest(offered, expected)
+        if not offered:
+            return False
+        return hmac.compare_digest(
+            offered.encode("latin-1", "ignore"), expected.encode("utf-8", "surrogateescape")
+        )
 
     def _host_ok(self) -> bool:
         """Whether `Host` names an address this server actually published.
@@ -331,7 +393,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def _unauthorised(self) -> None:
         # 20260804 ++ RG #HASS Drain the body, or keep-alive reads it as the next request.
-        self._read_json()
+        # 20260808 ** RG #Security A fixed ceiling, then hang up: never read GB from a stranger.
+        length = self._content_length() or 0
+        if 0 < length <= DRAIN_LIMIT_BYTES:
+            with contextlib.suppress(OSError):
+                self.rfile.read(length)
+        elif length or self.headers.get("Content-Length") or self.headers.get("Transfer-Encoding"):
+            self.close_connection = True
+
         self._error(
             401,
             "missing or invalid API key; send it as `Authorization: Bearer <key>`",
@@ -339,25 +408,86 @@ class Handler(BaseHTTPRequestHandler):
             extra={"WWW-Authenticate": 'Bearer realm="onfeather-free"'},
         )
 
-    def _read_json(self) -> dict | None:
+    def _content_length(self) -> int | None:
+        """Declared body size, or None when it is absent, malformed or absurd."""
+        raw = self.headers.get("Content-Length")
+        if raw is None:
+            return None
         try:
-            length = int(self.headers.get("Content-Length", 0))
+            length = int(raw)
         except ValueError:
+            return None
+        return length if 0 <= length <= MAX_BODY_BYTES else None
+
+    def _read_json(self) -> dict | None:
+        """The request body, or None when there is nothing usable in it.
+
+        Every path that cannot account for exactly how many bytes the body held
+        closes the connection: bytes left in the buffer of a keep-alive
+        connection are read as the next request line, which is a desync a
+        reverse proxy in front of us would turn into request smuggling.
+        """
+        # 20260808 ** RG #Security chunked is unsupported; reading it as 0 bytes desyncs keep-alive.
+        if self.headers.get("Transfer-Encoding"):
+            self.close_connection = True
+            return None
+
+        length = self._content_length()
+        if length is None:
+            # 20260808 ** RG #Security Absent is fine; unreadable or oversized loses the stream.
+            if self.headers.get("Content-Length") is not None:
+                self.close_connection = True
             return None
         if length <= 0:
             return None
+
         try:
-            return json.loads(self.rfile.read(length))
-        except (ValueError, OSError):
+            body = self.rfile.read(length)
+        except OSError:
+            self.close_connection = True
             return None
+        if len(body) != length:
+            self.close_connection = True
+            return None
+
+        try:
+            parsed = json.loads(body)
+        except ValueError:
+            return None
+        # 20260808 ** RG #Security A body of `[]` or `"x"` is valid JSON and has no .get().
+        return parsed if isinstance(parsed, dict) else None
 
     # -- routes -----------------------------------------------------------
 
-    def do_GET(self) -> None:  # noqa: N802
-        path = self.path.split("?", 1)[0].rstrip("/")
-        if not self._guard(path):
-            return
+    def _dispatch(self, route: Callable[[str], None]) -> None:
+        """Run one route, turning anything unforeseen into a reply, not a reset.
 
+        A caller that gets a connection reset reads it as "try again", so an
+        input nobody anticipated becomes a retry loop against a server that
+        keeps killing its own threads. It has to become a reply.
+        """
+        path = self.path.split("?", 1)[0].rstrip("/")
+        self._replied = False
+        try:
+            if self._guard(path):
+                route(path)
+        except Exception:  # noqa: BLE001
+            # 20260808 ** RG #Security The traceback goes to stderr; the caller gets JSON.
+            traceback.print_exc()
+            if self._replied:
+                # 20260808 ** RG #Security One reply per request: a second one desyncs keep-alive.
+                self.close_connection = True
+                return
+            with contextlib.suppress(OSError):
+                self._error(500, "internal error", "internal_error")
+
+    def do_GET(self) -> None:  # noqa: N802
+        self._dispatch(self._get)
+
+    def do_POST(self) -> None:  # noqa: N802
+        self._dispatch(self._post)
+
+    def _get(self, path: str) -> None:
         if path in ("/health", "/healthz"):
             self._send(200, {"status": "ok"})
         elif path in ("/v1/models", "/models"):
@@ -367,11 +497,7 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._error(404, f"unknown path {path}", "not_found")
 
-    def do_POST(self) -> None:  # noqa: N802
-        path = self.path.split("?", 1)[0].rstrip("/")
-        if not self._guard(path):
-            return
-
+    def _post(self, path: str) -> None:
         if path not in ("/v1/chat/completions", "/chat/completions"):
             self._error(404, f"unknown path {path}", "not_found")
             return
@@ -381,6 +507,18 @@ class Handler(BaseHTTPRequestHandler):
             # 20260808 ** RG #Security text/plain is what makes a cross-origin POST preflight-free.
             self._read_json()
             self._error(415, "request body must be application/json", "unsupported_media_type")
+            return
+
+        declared = self.headers.get("Content-Length")
+        if declared is not None and self._content_length() is None:
+            # 20260808 ** RG #Security Refuse on the declared size, before reading a byte of it.
+            self.close_connection = True
+            if declared.strip().isdigit():
+                self._error(
+                    413, f"request body exceeds {MAX_BODY_BYTES} bytes", "payload_too_large"
+                )
+            else:
+                self._error(400, "Content-Length is not a readable byte count")
             return
 
         payload = self._read_json()
@@ -402,7 +540,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
-        capability, private, _pinned = self.router.resolve(payload.get("model", "auto"))
+        capability, private, pinned = self.router.resolve(payload.get("model", "auto"))
         key = session_key(payload, self.headers)
         pin = self.router.sessions.get(key)
 
@@ -418,6 +556,8 @@ class Handler(BaseHTTPRequestHandler):
                 tool_choice=payload.get("tool_choice"),
                 response_format=payload.get("response_format"),
                 min_context=estimated_tokens(payload),
+                # 20260808 ** RG #Security An explicit pin binds: ignoring it sends the prompt away.
+                require=pinned,
                 prefer=pin,
             )
         except CompletionError as error:
@@ -545,14 +685,40 @@ def _as_openai_response(result) -> dict:
     }
 
 
+class BoundedServer(ThreadingHTTPServer):
+    """A threading server that will not spawn more threads than it can afford.
+
+    One connection is one thread and one descriptor, and both are free to open
+    before anything has been authenticated. The ceiling is refused in the accept
+    loop, so a flood costs a socket close rather than a thread.
+    """
+
+    daemon_threads = True
+
+    def __init__(self, *args: Any, max_connections: int = MAX_CONNECTIONS, **kwargs: Any) -> None:
+        self._slots = threading.BoundedSemaphore(max_connections)
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        if not self._slots.acquire(blocking=False):
+            # 20260808 ** RG #Security close_request, not shutdown_request: nothing to release yet.
+            self.close_request(request)
+            return
+        super().process_request(request, client_address)
+
+    def shutdown_request(self, request: Any) -> None:
+        try:
+            super().shutdown_request(request)
+        finally:
+            self._slots.release()
+
+
 def build(router: Router, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> ThreadingHTTPServer:
     """Create the server without starting it, so tests can drive it."""
     # 20260808 ** RG #Security The allowlist is what we published, plus loopback. Nothing else.
     allowed = frozenset({host.lower(), *LOOPBACK_HOSTS})
     handler = type("BoundHandler", (Handler,), {"router": router, "allowed_hosts": allowed})
-    server = ThreadingHTTPServer((host, port), handler)
-    server.daemon_threads = True
-    return server
+    return BoundedServer((host, port), handler)
 
 
 def serve(

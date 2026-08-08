@@ -15,10 +15,12 @@ a 500, and the next candidate gets a turn.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 import httpx
 
@@ -35,6 +37,9 @@ DEFAULT_MAX_TOKENS = 4096
 
 #: 20260725 RG For a 429 that does not say when to come back.
 DEFAULT_COOLDOWN_SECONDS = 60.0
+
+#: 20260808 ** RG #Security No free window is longer than a day; past that it is a provider bug.
+MAX_COOLDOWN_SECONDS = 86400.0
 
 CONFIGURATION_STATUSES = frozenset({401, 402, 403})
 
@@ -137,6 +142,7 @@ class Client:
         tool_choice: object | None = None,
         response_format: dict | None = None,
         min_context: int = 0,
+        require: tuple[str, str] | None = None,
         prefer: tuple[str, str] | None = None,
         now: datetime | None = None,
         environ: dict | None = None,
@@ -164,6 +170,7 @@ class Client:
                 quota_exhausted=self._anything_locked_out(moment, environ),
             )
 
+        options = _require_pair(options, require)
         options = _honour_pin(options, prefer)
         request = _Request(
             messages=messages,
@@ -338,19 +345,27 @@ class Client:
         )
 
     def _cool_down(self, provider: Provider, response: httpx.Response) -> None:
-        """Sideline a rate-limited provider for as long as it asks.
+        """Sideline a rate-limited provider for as long as it asks — within reason.
 
         `retry-after` is authoritative when present. Without it we guess a
         minute, which recovers a per-minute limit on its own and stops us
         hammering a daily one more than once a minute.
+
+        Capped at a day, because the ledger persists lockouts: an upstream that
+        sends milliseconds where seconds were meant would otherwise retire the
+        provider for thirty years, with nothing short of `of-free reset` able to
+        undo it.
         """
         seconds = DEFAULT_COOLDOWN_SECONDS
         raw = response.headers.get("retry-after")
         if raw:
             try:
-                seconds = max(float(raw), 1.0)
+                seconds = min(max(float(raw), 1.0), MAX_COOLDOWN_SECONDS)
             except ValueError:
-                pass
+                # 20260808 ** RG #Security Retry-After also admits an HTTP date; do not drop it.
+                with contextlib.suppress(TypeError, ValueError):
+                    when = parsedate_to_datetime(raw)
+                    seconds = min(max(when.timestamp() - time.time(), 1.0), MAX_COOLDOWN_SECONDS)
         self.ledger.lock_out(provider.name, until=time.time() + seconds, reason="429")
 
     @staticmethod
@@ -442,6 +457,31 @@ def _conform(message: dict, schema: dict) -> dict:
     out = dict(message)
     out["content"] = json.dumps(value, ensure_ascii=False)
     return out
+
+
+def _require_pair(options: list[Candidate], require: tuple[str, str] | None) -> list[Candidate]:
+    """Keep only the provider/model the caller named, or fail saying so.
+
+    `require` filters where `prefer` reorders. Naming `ollama/qwen2.5:7b` is the
+    caller saying this must not leave the machine, so an impossible pin has to
+    fail rather than quietly route somewhere else — a prompt that has left is
+    not coming back.
+    """
+    if not require:
+        return options
+
+    provider_name, model_id = require
+    kept = [
+        option for option in options
+        if option.provider.name == provider_name and option.model.id == model_id
+    ]
+    if not kept:
+        raise CompletionError(
+            f"{provider_name}/{model_id} was requested explicitly and is not available "
+            "right now; send `auto` to let the router choose instead",
+            [],
+        )
+    return kept
 
 
 def _honour_pin(options: list[Candidate], prefer: tuple[str, str] | None) -> list[Candidate]:
