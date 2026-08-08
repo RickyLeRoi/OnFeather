@@ -13,9 +13,15 @@ so nothing is compiled on your machine.
 ```sh
 git clone https://github.com/RickyLeRoi/OnFeather.git
 cd OnFeather
-cp .env.example .env      # fill in whichever API keys you have — all are optional
+cp .env.example .env      # provider keys are all optional; ONFEATHER_API_KEY is not
+python3 -c 'import secrets; print(secrets.token_urlsafe(32))'   # into ONFEATHER_API_KEY
 docker compose up -d
 ```
+
+That key is the one step you cannot skip. Compose publishes the port on every
+interface, and a router with no authentication on a network address is one
+anybody on that network can spend your quota with, so it refuses to start
+without one.
 
 The router is now on `http://localhost:4141/v1`, OpenAI-compatible:
 
@@ -24,20 +30,22 @@ curl http://localhost:4141/health
 curl http://localhost:4141/v1/models
 
 curl http://localhost:4141/v1/chat/completions \
+  -H "authorization: Bearer $ONFEATHER_API_KEY" \
   -H 'content-type: application/json' \
   -d '{"model": "auto", "messages": [{"role": "user", "content": "hello"}]}'
 ```
 
 Any OpenAI client works by pointing its base URL at `http://localhost:4141/v1`
-with any non-empty API key.
+with `ONFEATHER_API_KEY` as its API key.
 
 ## Letting other machines reach the router
 
-Compose publishes `4141` on every host interface, and the router has no
-authentication unless you give it a key. On a laptop that is nothing; on a LAN
-it means anyone who can reach the port can spend your free-tier quota.
+Compose publishes `4141` on every host interface, so on a LAN anyone who can
+reach the port could spend your free-tier quota. The container therefore
+**refuses to start** without a key: `docker compose logs free` says so and the
+service stays down.
 
-Set a key in `.env` — `env_file` hands it to the container, and `of-free serve`
+Set one in `.env` — `env_file` hands it to the container, and `of-free serve`
 picks it up on its own:
 
 ```sh
@@ -54,8 +62,10 @@ curl http://localhost:4141/v1/status -H "Authorization: Bearer $ONFEATHER_API_KE
 
 `/health` stays open regardless, so the container healthcheck keeps passing.
 
-To skip the question entirely, bind the published port to loopback in
-`docker-compose.yml`:
+If the router is only ever meant for this machine, narrow the published port to
+loopback in `docker-compose.yml` as well. The key stays required — inside the
+container `of-free` still binds every interface, and other containers on the
+same network still reach it — but the LAN no longer sees the port at all:
 
 ```yaml
 ports:

@@ -41,6 +41,12 @@ PUBLIC_PATHS = frozenset({"/health", "/healthz"})
 # 20260804 ++ RG #HASS Unset means no authentication, the loopback default.
 API_KEY_ENV = "ONFEATHER_API_KEY"
 
+# 20260808 ** RG #Security The only addresses we are willing to serve without a key.
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+# 20260808 ** RG #Security Anything else on a POST is a CORS simple request in disguise.
+ALLOWED_CONTENT_TYPES = frozenset({"application/json", "text/json"})
+
 # 20260725 RG Routed locally whatever the strategy.
 PRIVATE_MODEL_ALIASES = frozenset({"private", "local"})
 
@@ -219,8 +225,19 @@ class Router:
         return max(1, int(min(pending))) if pending else None
 
 
+def _hostname(header: str) -> str:
+    """The host part of a `Host` header, without its port or IPv6 brackets."""
+    host = header.strip()
+    if host.startswith("["):
+        return host[1:].partition("]")[0].lower()
+    return host.partition(":")[0].lower()
+
+
 class Handler(BaseHTTPRequestHandler):
     router: Router
+
+    # 20260808 ** RG #Security Bound by build() to whatever address was published.
+    allowed_hosts: frozenset[str] = LOOPBACK_HOSTS
 
     protocol_version = "HTTP/1.1"
     server_version = "onfeather-free"
@@ -273,6 +290,45 @@ class Handler(BaseHTTPRequestHandler):
             offered = offered[7:].strip()
         return bool(offered) and hmac.compare_digest(offered, expected)
 
+    def _host_ok(self) -> bool:
+        """Whether `Host` names an address this server actually published.
+
+        This is the defence against DNS rebinding, and it is only needed while
+        no key is set: JavaScript cannot forge Host, so a domain that re-resolves
+        to loopback still arrives here under its own name and is turned away.
+        Once a key is required, authentication is the defence, and a caller that
+        legitimately reaches the router by its LAN address must keep working.
+        """
+        if self.router.api_key:
+            return True
+        return _hostname(self.headers.get("Host") or "") in self.allowed_hosts
+
+    def _from_browser(self) -> bool:
+        # 20260808 ** RG #Security No OpenAI client sends these headers; a browser always does.
+        return bool(self.headers.get("Origin") or self.headers.get("Sec-Fetch-Site"))
+
+    def _guard(self, path: str) -> bool:
+        """Every check a request passes before the router sees it."""
+        if self._from_browser():
+            # 20260808 ** RG #Security Closing beats draining: nothing here is worth reading.
+            self.close_connection = True
+            self._error(403, "browser-originated requests are not accepted", "forbidden")
+            return False
+        if not self._host_ok():
+            self.close_connection = True
+            self._error(
+                421,
+                "unrecognised Host header; reach this server as "
+                f"{' or '.join(sorted(self.allowed_hosts))}, or set {API_KEY_ENV} "
+                f"to accept requests by any name",
+                "misdirected_request",
+            )
+            return False
+        if not self._authorised(path):
+            self._unauthorised()
+            return False
+        return True
+
     def _unauthorised(self) -> None:
         # 20260804 ++ RG #HASS Drain the body, or keep-alive reads it as the next request.
         self._read_json()
@@ -299,8 +355,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0].rstrip("/")
-        if not self._authorised(path):
-            self._unauthorised()
+        if not self._guard(path):
             return
 
         if path in ("/health", "/healthz"):
@@ -314,12 +369,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0].rstrip("/")
-        if not self._authorised(path):
-            self._unauthorised()
+        if not self._guard(path):
             return
 
         if path not in ("/v1/chat/completions", "/chat/completions"):
             self._error(404, f"unknown path {path}", "not_found")
+            return
+
+        media_type = (self.headers.get("Content-Type") or "").partition(";")[0].strip().lower()
+        if media_type and media_type not in ALLOWED_CONTENT_TYPES:
+            # 20260808 ** RG #Security text/plain is what makes a cross-origin POST preflight-free.
+            self._read_json()
+            self._error(415, "request body must be application/json", "unsupported_media_type")
             return
 
         payload = self._read_json()
@@ -486,7 +547,9 @@ def _as_openai_response(result) -> dict:
 
 def build(router: Router, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> ThreadingHTTPServer:
     """Create the server without starting it, so tests can drive it."""
-    handler = type("BoundHandler", (Handler,), {"router": router})
+    # 20260808 ** RG #Security The allowlist is what we published, plus loopback. Nothing else.
+    allowed = frozenset({host.lower(), *LOOPBACK_HOSTS})
+    handler = type("BoundHandler", (Handler,), {"router": router, "allowed_hosts": allowed})
     server = ThreadingHTTPServer((host, port), handler)
     server.daemon_threads = True
     return server
@@ -505,6 +568,16 @@ def serve(
     api_key: str | None = None,
 ) -> None:
     """Run until interrupted."""
+    if not api_key and host not in LOOPBACK_HOSTS:
+        # 20260808 ** RG #Security Off loopback with no key: refuse to start, do not warn.
+        raise SystemExit(
+            f"refusing to bind {host} without authentication: anyone who reaches "
+            f"the port spends your quota and reads your answers.\n"
+            f"  export {API_KEY_ENV}=$(python3 -c "
+            f"'import secrets; print(secrets.token_urlsafe(32))')\n"
+            f"  or bind {DEFAULT_HOST} to stay on this machine."
+        )
+
     router = Router(
         registry, ledger, strategy=strategy, verbose=verbose,
         timeout=timeout, max_tokens=max_tokens, api_key=api_key,
@@ -514,10 +587,7 @@ def serve(
     print(f"  strategy: {strategy}")
     print(f"  routable: {len(candidates(registry, ledger, strategy=strategy))} provider/model pairs")
     print(f"  tool calling: {len(candidates(registry, ledger, requires={'tools'}))} pairs")
-    print(f"  auth: {'API key required' if api_key else 'open'}")
-    if not api_key and host not in ("127.0.0.1", "localhost", "::1"):
-        # 20260804 ++ RG #HASS Off loopback with no key: anyone can spend the quota.
-        print(f"    warning: reachable from the network — set {API_KEY_ENV} to require a key")
+    print(f"  auth: {'API key required' if api_key else 'open (loopback only)'}")
     print("\n  export OPENAI_BASE_URL=http://%s:%d/v1" % (host, port))
     # 20260804 ++ RG #HASS Named, not printed: this reaches docker logs.
     print(f"  export OPENAI_API_KEY={'$' + API_KEY_ENV if api_key else 'unused'}\n")

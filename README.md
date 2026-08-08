@@ -60,7 +60,7 @@ only looks for `custom_components/` there.
 All three ship in one image, published to GHCR:
 
 ```sh
-cp .env.example .env      # API keys, all optional
+cp .env.example .env      # provider keys optional, ONFEATHER_API_KEY required
 docker compose up -d      # router on http://localhost:4141/v1
 ```
 

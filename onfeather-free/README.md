@@ -158,11 +158,16 @@ response a client cannot parse.
 
 ### Letting something else reach it
 
-There is no authentication by default, which is right for `127.0.0.1` and wrong
-for anything else. Binding to a network address without a key means anyone who
-can reach the port can spend your quota:
+There is no authentication on `127.0.0.1`, which is right there and wrong
+everywhere else: anyone who can reach the port spends your quota and reads your
+answers. So off loopback a key is not advice, it is a precondition — the server
+refuses to start without one:
 
 ```console
+$ of-free serve --host 0.0.0.0
+refusing to bind 0.0.0.0 without authentication: anyone who reaches the port
+spends your quota and reads your answers.
+
 $ export ONFEATHER_API_KEY=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
 $ of-free serve --host 0.0.0.0
   auth: API key required
@@ -177,6 +182,13 @@ client = OpenAI(base_url="http://192.168.1.50:4141/v1", api_key=os.environ["ONFE
 
 `/health` stays open regardless, because the container healthcheck has no key to
 send.
+
+Two things are refused whatever the configuration, because no OpenAI client
+does either and a web page does both: a request carrying `Origin` or
+`Sec-Fetch-Site`, and a POST that is not `application/json`. Together they close
+CSRF against the loopback port. While no key is set, `Host` must also name the
+address the server was published on, which is what stops a domain that
+re-resolves to `127.0.0.1` from becoming same-origin with the router.
 
 ### Home Assistant
 

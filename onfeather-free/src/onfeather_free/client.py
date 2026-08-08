@@ -215,7 +215,12 @@ class Client:
 
         started = time.perf_counter()
         try:
-            with httpx.Client(timeout=self.timeout, transport=self._transport) as http:
+            with httpx.Client(
+                timeout=self.timeout,
+                transport=self._transport,
+                # 20260808 ** RG #Security No env proxy or CA bundle: bearer tokens travel here.
+                trust_env=False,
+            ) as http:
                 response = http.post(
                     _join(provider.base_url, "chat/completions"), json=payload, headers=headers
                 )

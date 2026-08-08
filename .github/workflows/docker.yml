@@ -58,8 +58,15 @@ jobs:
           # 20260803 ++ RG #Docker Proves providers.yaml made it into the wheel.
           docker run --rm onfeather:smoke of-free providers > /dev/null
           docker run --rm onfeather:smoke test -f /opt/onfeather/share/providers-docker.yaml
+          # 20260808 ** RG #Security A published port with no key must refuse to start at all.
+          refused=0
+          timeout 30 docker run --rm onfeather:smoke \
+            of-free serve --host 0.0.0.0 --port 4141 || refused=$?
+          # 20260808 ** RG #Security Exactly 1: a 124 would mean it started and we timed it out.
+          test "$refused" = 1
           # 20260803 ++ RG #Docker The server must answer on 0.0.0.0 and write its ledger as non-root.
-          docker run -d --name onfeather-smoke -p 4141:4141 onfeather:smoke
+          docker run -d --name onfeather-smoke -p 4141:4141 \
+            -e ONFEATHER_API_KEY=smoke-test onfeather:smoke
           for _ in $(seq 1 30); do
             curl -fsS http://127.0.0.1:4141/health && break
             sleep 1
@@ -75,6 +82,9 @@ jobs:
           done
           test "$(curl -so /dev/null -w '%{http_code}' http://127.0.0.1:4142/v1/status)" = 401
           curl -fsS http://127.0.0.1:4142/v1/status -H 'Authorization: Bearer smoke-test' > /dev/null
+          # 20260808 ** RG #Security No OpenAI client sends Origin; a web page does. Must be a 403.
+          test "$(curl -so /dev/null -w '%{http_code}' http://127.0.0.1:4142/v1/status \
+            -H 'Authorization: Bearer smoke-test' -H 'Origin: https://attacker.example')" = 403
           docker rm -f onfeather-auth
 
       - name: Log in to GHCR

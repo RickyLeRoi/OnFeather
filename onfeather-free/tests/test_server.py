@@ -11,7 +11,7 @@ import pytest
 from onfeather_free import companions
 from onfeather_free.budget import Ledger
 from onfeather_free.client import Client
-from onfeather_free.server import Router, build
+from onfeather_free.server import API_KEY_ENV, Router, build, serve
 
 
 def upstream(handler):
@@ -376,6 +376,108 @@ def test_refusal_says_how_to_authenticate(guarded):
     response = httpx.get(f"{base}/v1/status", timeout=10)
     assert response.json()["error"]["code"] == "invalid_api_key"
     assert "Bearer" in response.headers["WWW-Authenticate"]
+
+
+# -- browsers and rebinding -----------------------------------------------
+
+
+def test_a_foreign_host_header_is_refused(live):
+    """DNS rebinding: the attacker's domain re-resolves to 127.0.0.1 and becomes
+    same-origin for the browser, but Host still carries its own name, which
+    JavaScript cannot forge."""
+    base, _ = live
+    response = httpx.get(f"{base}/v1/status", headers={"Host": "attacker.example"}, timeout=10)
+
+    assert response.status_code == 421
+    assert "sk-test" not in response.text
+
+
+def test_a_published_host_is_accepted(live):
+    base, _ = live
+    port = base.rsplit(":", 1)[1]
+    response = httpx.get(f"{base}/v1/status", headers={"Host": f"localhost:{port}"}, timeout=10)
+    assert response.status_code == 200
+
+
+def test_a_configured_key_lets_any_host_through(guarded):
+    """Authentication is the defence once it exists, and rebinding cannot
+    produce the key. A caller reaching the router by its LAN name is ordinary."""
+    base, _ = guarded
+    response = httpx.get(
+        f"{base}/v1/status",
+        headers={"Host": "onfeather.lan:4141", "Authorization": "Bearer sk-onfeather"},
+        timeout=10,
+    )
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "header",
+    [{"Origin": "https://attacker.example"}, {"Sec-Fetch-Site": "cross-site"}],
+)
+def test_browser_originated_requests_are_refused(live, header):
+    base, _ = live
+    assert httpx.get(f"{base}/v1/status", headers=header, timeout=10).status_code == 403
+
+
+def test_a_cross_origin_completion_never_reaches_a_provider(live):
+    base, router = live
+    served = []
+    router.client = Client(
+        router.registry, router.ledger,
+        transport=upstream(lambda request: served.append(request) or ok(request)),
+    )
+
+    response = httpx.post(
+        f"{base}/v1/chat/completions",
+        json={"messages": [{"role": "user", "content": "hi"}]},
+        headers={"Origin": "https://attacker.example"},
+        timeout=10,
+    )
+
+    assert response.status_code == 403
+    assert served == [], "the quota was spent on a request from a web page"
+
+
+def test_a_text_plain_post_is_refused(live):
+    """text/plain is exactly what lets a cross-origin POST skip the preflight."""
+    base, _ = live
+    response = httpx.post(
+        f"{base}/v1/chat/completions",
+        content=json.dumps({"messages": [{"role": "user", "content": "hi"}]}),
+        headers={"Content-Type": "text/plain"},
+        timeout=10,
+    )
+    assert response.status_code == 415
+
+
+def test_a_refused_content_type_leaves_the_connection_usable(live):
+    base, _ = live
+    body = json.dumps({"messages": [{"role": "user", "content": "x" * 500}]})
+
+    with httpx.Client(timeout=10) as connection:
+        refused = connection.post(
+            f"{base}/v1/chat/completions", content=body,
+            headers={"Content-Type": "text/plain"},
+        )
+        assert refused.status_code == 415
+
+        served = connection.post(
+            f"{base}/v1/chat/completions", content=body,
+            headers={"Content-Type": "application/json"},
+        )
+        assert served.status_code == 200, "the refused body poisoned the connection"
+
+
+def test_serving_off_loopback_without_a_key_refuses_to_start(registry):
+    """A warning on stdout inside `docker logs` is not a control."""
+    ledger = Ledger(":memory:")
+    try:
+        with pytest.raises(SystemExit) as caught:
+            serve(registry, ledger, host="0.0.0.0", port=0)
+        assert API_KEY_ENV in str(caught.value)
+    finally:
+        ledger.close()
 
 
 # -- companion tools ------------------------------------------------------

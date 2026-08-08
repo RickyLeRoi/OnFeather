@@ -93,7 +93,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    config.load_env(args.env)
+    # 20260808 ** RG #Security The allowlist is what the registry declares it uses, nothing more.
+    known = registry_module.load(args.registry)
+    config.load_env(
+        args.env,
+        allowed=frozenset(p.api_key_env for p in known if p.api_key_env),
+    )
     return args.handler(args)
 
 

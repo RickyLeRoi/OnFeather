@@ -46,21 +46,17 @@ to report — see [the note below](#why-there-is-no-of-tune-device).
 - `of-free` reachable from Home Assistant
 
 That second one is the part people get wrong. The router defaults to
-`127.0.0.1`, which from another machine is nothing at all:
-
-```bash
-of-free serve --host 0.0.0.0 --port 4141
-```
-
-Off loopback, set a key as well — otherwise anyone on the network can spend your
-quota:
+`127.0.0.1`, which from another machine is nothing at all — and off loopback it
+refuses to start without a key, because otherwise anyone on the network can
+spend your quota:
 
 ```bash
 export ONFEATHER_API_KEY=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
-of-free serve --host 0.0.0.0
+of-free serve --host 0.0.0.0 --port 4141
 ```
 
-The router says which of the two it is doing on start-up.
+Give the same key to the integration when it asks. The router prints
+`auth: API key required` on start-up to confirm.
 
 ## Install
 

@@ -8,14 +8,19 @@ whether a provider is configured, not what it was configured with.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 #: 20260725 RG First match wins; an exported variable beats the file.
+#: 20260808 ** RG #Security cwd stays first: it is the normal flow. What changed is what applies.
 SEARCH_PATHS = (
     Path.cwd() / ".env",
     Path.home() / ".onfeather" / ".env",
     Path.home() / ".config" / "onfeather" / ".env",
 )
+
+#: 20260808 ** RG #Security Our own variables; the rest is no business of a credentials file.
+ONFEATHER_PREFIX = "ONFEATHER_"
 
 
 def parse_env(text: str) -> dict[str, str]:
@@ -47,10 +52,20 @@ def parse_env(text: str) -> dict[str, str]:
     return values
 
 
-def load_env(path: str | Path | None = None, *, environ: dict | None = None) -> list[Path]:
+def load_env(
+    path: str | Path | None = None,
+    *,
+    environ: dict | None = None,
+    allowed: frozenset[str] = frozenset(),
+) -> list[Path]:
     """Seed the environment from a .env file. Returns the files applied.
 
-    Existing environment variables win, so exporting a key in the shell
+    Only keys this tool declares an interest in are applied. A .env in the
+    working directory is a convenience, but it is also a file somebody else may
+    have written: unfiltered, it could set HTTPS_PROXY or SSL_CERT_FILE in a
+    process that is about to send six bearer tokens over the network.
+
+    Existing environment variables still win, so exporting a key in the shell
     overrides the file rather than being silently ignored.
     """
     target = environ if environ is not None else os.environ
@@ -64,8 +79,20 @@ def load_env(path: str | Path | None = None, *, environ: dict | None = None) -> 
             values = parse_env(candidate.read_text())
         except OSError:
             continue
+
+        ignored = []
         for key, value in values.items():
-            target.setdefault(key, value)
+            if key in allowed or key.startswith(ONFEATHER_PREFIX):
+                target.setdefault(key, value)
+            else:
+                ignored.append(key)
+        if ignored:
+            # 20260808 ** RG #Security Silence would be worse: say what was dropped and from where.
+            print(
+                f"note: {candidate} sets {len(ignored)} variable(s) this tool does not use, "
+                f"ignored: {', '.join(sorted(ignored)[:5])}",
+                file=sys.stderr,
+            )
         applied.append(candidate)
         break
     return applied
