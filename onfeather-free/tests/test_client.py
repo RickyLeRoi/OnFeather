@@ -298,3 +298,32 @@ def test_no_candidates_raises_immediately(registry, ledger, environ):
     registry.providers.pop("ollama")
     with pytest.raises(CompletionError, match="no provider available"):
         send(client(registry, ledger, always(200)), environ, capability="telepathy")
+
+
+# -- the connection pool --------------------------------------------------
+
+
+def test_one_pool_serves_every_request(registry, ledger, environ, monkeypatch):
+    """A client per request paid a fresh TCP connection and a full TLS handshake
+    every time — cost the reported latency did not even include, because the
+    timer started after the client was built."""
+    built = []
+    real = httpx.Client
+
+    def counting(*args, **kwargs):
+        built.append(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "Client", counting)
+    with Client(registry, ledger, transport=transport(always(200))) as instance:
+        send(instance, environ)
+        send(instance, environ)
+
+    assert len(built) == 1
+
+
+def test_the_pool_does_not_trust_the_environment(registry, ledger):
+    """A .env setting HTTPS_PROXY or SSL_CERT_FILE would otherwise see every
+    bearer token in the clear. See finding 2."""
+    with Client(registry, ledger) as instance:
+        assert instance._http.trust_env is False

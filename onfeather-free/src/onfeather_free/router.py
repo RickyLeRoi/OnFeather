@@ -12,7 +12,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from .budget import Ledger, ProviderStatus
+from .budget import Ledger, LedgerSnapshot, ProviderStatus
 from .registry import Model, Provider, Registry
 
 #: 20260725 RG Spread load to preserve the scarcest quota.
@@ -82,6 +82,7 @@ def candidates(
     private: bool = False,
     now: datetime | None = None,
     environ: dict[str, str] | None = None,
+    snapshot: LedgerSnapshot | None = None,
 ) -> list[Candidate]:
     """Every viable option, best first.
 
@@ -89,6 +90,10 @@ def candidates(
     model without tool calling cannot serve an agentic request at all, whereas
     one without native schema constraint can, because the schema is emulated in
     the prompt and checked on the way back.
+
+    One ledger snapshot serves the whole decision, and a caller holding one
+    already — the status endpoint does — passes it in rather than paying for a
+    second.
     """
     if strategy not in STRATEGIES:
         raise ValueError(f"unknown strategy {strategy!r}, expected one of {STRATEGIES}")
@@ -96,6 +101,8 @@ def candidates(
     moment = now or datetime.now(timezone.utc)
     allowed = configured_providers(registry, environ)
     local_only = private or strategy == STRATEGY_LOCAL
+    # 20260808 ** RG #Security One read for every model of every provider, not four each.
+    view = snapshot if snapshot is not None else ledger.snapshot(moment, providers=allowed)
 
     found: list[Candidate] = []
     for provider in registry.usable():
@@ -109,7 +116,7 @@ def candidates(
                 continue
             if not set(requires) <= model.capabilities:
                 continue
-            status = ledger.status(provider, moment, model_id=model.id)
+            status = ledger.status(provider, moment, model_id=model.id, snapshot=view)
             if not status.available:
                 continue
             if min_context and not fits(model, status, min_context):
@@ -187,6 +194,8 @@ def choose(
     environ: dict[str, str] | None = None,
 ) -> Route:
     """Pick where this request goes, or explain why nothing fits."""
+    moment = now or datetime.now(timezone.utc)
+    view = ledger.snapshot(moment, providers=registry.providers)
     options = candidates(
         registry,
         ledger,
@@ -195,13 +204,15 @@ def choose(
         min_context=min_context,
         strategy=strategy,
         private=private,
-        now=now,
+        now=moment,
         environ=environ,
+        snapshot=view,
     )
     if not options:
         raise NoRouteAvailable(
             _explain_empty(
-                registry, ledger, capability, private, now, environ, requires, min_context
+                registry, ledger, capability, private, moment, environ, requires, min_context,
+                snapshot=view,
             )
         )
 
@@ -232,6 +243,7 @@ def _explain_empty(
     environ: dict[str, str] | None,
     requires: frozenset[str] | set[str] = frozenset(),
     min_context: int = 0,
+    snapshot: LedgerSnapshot | None = None,
 ) -> str:
     """Say which of the filters emptied the list.
 
@@ -254,8 +266,11 @@ def _explain_empty(
             return f"no configured model supports {needed!r}"
 
     moment = now or datetime.now(timezone.utc)
+    view = snapshot if snapshot is not None else ledger.snapshot(
+        moment, providers=registry.providers
+    )
     if min_context and not any(
-        fits(model, ledger.status(provider, moment, model_id=model.id), min_context)
+        fits(model, ledger.status(provider, moment, model_id=model.id, snapshot=view), min_context)
         for provider in reachable
         for model in provider.models
     ):
@@ -273,7 +288,7 @@ def _explain_empty(
     for provider in capable:
         if provider.name not in allowed:
             continue
-        status = ledger.status(provider, moment)
+        status = ledger.status(provider, moment, snapshot=view)
         if not status.available:
             resets.append(provider.label)
     if resets:

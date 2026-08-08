@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import struct
 import sys
 from pathlib import Path
 
@@ -92,15 +93,30 @@ def _cmd_probe(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_inspect(args: argparse.Namespace) -> int:
-    if not args.model.exists():
-        print(f"error: {args.model} does not exist", file=sys.stderr)
-        return 1
+def _read_model(path: Path) -> gguf.GGUFModel | None:
+    """Read a GGUF header, reporting any refusal instead of raising.
 
+    A GGUF is untrusted input by design — these commands are meant to be
+    pointed at a file just downloaded, or at a remote one over range requests —
+    so a malformed header has to end in a message. Nothing here allocates on a
+    declared size any more, but a truncated read still surfaces as struct.error
+    and a hostile depth as RecursionError, and neither is a traceback the user
+    should be reading.
+    """
+    if not path.exists():
+        print(f"error: {path} does not exist", file=sys.stderr)
+        return None
     try:
-        model = gguf.read(args.model)
-    except gguf.GGUFError as error:
-        print(f"error: {error}", file=sys.stderr)
+        return gguf.read(path)
+    except (gguf.GGUFError, RecursionError, MemoryError, OSError, struct.error) as error:
+        # 20260808 ** RG #Security A downloaded GGUF is untrusted input: never a traceback.
+        print(f"error: cannot read {path}: {error}", file=sys.stderr)
+        return None
+
+
+def _cmd_inspect(args: argparse.Namespace) -> int:
+    model = _read_model(args.model)
+    if model is None:
         return 1
 
     bandwidth = args.bandwidth
@@ -113,14 +129,8 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
 
 
 def _cmd_plan(args: argparse.Namespace) -> int:
-    if not args.model.exists():
-        print(f"error: {args.model} does not exist", file=sys.stderr)
-        return 1
-
-    try:
-        model = gguf.read(args.model)
-    except gguf.GGUFError as error:
-        print(f"error: {error}", file=sys.stderr)
+    model = _read_model(args.model)
+    if model is None:
         return 1
 
     if args.profile:

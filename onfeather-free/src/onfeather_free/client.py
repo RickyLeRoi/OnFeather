@@ -88,6 +88,13 @@ class Attempt:
     ok: bool
     status: int | None = None
     error: str | None = None
+    """Our own account of what went wrong. Safe to hand to whoever called us."""
+    detail: str | None = None
+    """What the provider itself said, kept apart because it is not ours to pass
+    on: these bodies routinely carry the organisation id, the project id and
+    correlatable request ids, and the loopback default authenticates nobody.
+    The server logs it and answers with `error`; the CLI, talking to the person
+    running the process, prints both."""
 
 
 @dataclass
@@ -127,7 +134,23 @@ class Client:
         self.ledger = ledger
         self.timeout = timeout
         self.max_tokens = max_tokens
-        self._transport = transport
+        # 20260808 ** RG #Security One pool per process: a client per request paid a TLS handshake.
+        self._http = httpx.Client(
+            timeout=timeout,
+            transport=transport,
+            # 20260808 ** RG #Security No env proxy or CA bundle: bearer tokens travel here.
+            trust_env=False,
+            limits=httpx.Limits(max_keepalive_connections=16, max_connections=32),
+        )
+
+    def close(self) -> None:
+        self._http.close()
+
+    def __enter__(self) -> Client:
+        return self
+
+    def __exit__(self, *_) -> None:
+        self.close()
 
     def complete(
         self,
@@ -200,8 +223,10 @@ class Client:
         503 for a missing API key retries twice and then reports something true.
         """
         configured = configured_providers(self.registry, environ)
+        # 20260808 ** RG #Security One read for the whole sweep, not four per limit per provider.
+        view = self.ledger.snapshot(moment, providers=configured)
         return any(
-            not self.ledger.status(provider, moment).available
+            not self.ledger.status(provider, moment, snapshot=view).available
             for provider in self.registry.usable()
             if provider.name in configured
         )
@@ -222,15 +247,9 @@ class Client:
 
         started = time.perf_counter()
         try:
-            with httpx.Client(
-                timeout=self.timeout,
-                transport=self._transport,
-                # 20260808 ** RG #Security No env proxy or CA bundle: bearer tokens travel here.
-                trust_env=False,
-            ) as http:
-                response = http.post(
-                    _join(provider.base_url, "chat/completions"), json=payload, headers=headers
-                )
+            response = self._http.post(
+                _join(provider.base_url, "chat/completions"), json=payload, headers=headers
+            )
         except httpx.HTTPError as error:
             # 20260725 RG Unreachable is not a quota problem; do not charge the budget.
             return Attempt(provider.name, option.model.id, ok=False, error=str(error)), None
@@ -280,7 +299,9 @@ class Client:
                     model.id,
                     ok=False,
                     status=response.status_code,
-                    error=response.text[:200],
+                    # 20260808 ** RG #Security A classification travels; the body stays in `detail`.
+                    error=f"rejected the request (http {response.status_code})",
+                    detail=response.text[:200],
                 ),
                 None,
             )

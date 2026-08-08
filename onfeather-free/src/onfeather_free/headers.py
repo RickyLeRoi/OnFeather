@@ -39,16 +39,28 @@ _DURATION_SECONDS = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0
 _WINDOW_FROM_SECONDS = ((90, "minute"), (5400, "hour"), (float("inf"), "day"))
 
 
+#: 20260808 ** RG #Security A pair, never a bare unit: see the RateLimitHeaders docstring.
+Key = tuple[str, str | None]
+
+
 @dataclass
 class RateLimitHeaders:
-    """What one response told us, per unit."""
+    """What one response told us, per (unit, window).
 
-    remaining: dict[str, int] = field(default_factory=dict)
-    limit: dict[str, int] = field(default_factory=dict)
-    reset_seconds: dict[str, float] = field(default_factory=dict)
-    window: dict[str, str] = field(default_factory=dict)
-    """Window name where the provider made it explicit, directly or via a
-    renewal period."""
+    Keyed on the pair rather than the unit alone: a provider reporting remaining
+    requests per minute *and* per day writes both into a map keyed on
+    "requests", and whichever header the response happened to list last is the
+    one that survives. Which one that is depends on nothing we control.
+
+    A window of None means the provider did not name one, either in the header
+    or through a renewal period. It is a legitimate reading, not missing data:
+    Groq reports a bare `x-ratelimit-remaining-requests` and leaves the window
+    to be inferred from the registry.
+    """
+
+    remaining: dict[Key, int] = field(default_factory=dict)
+    limit: dict[Key, int] = field(default_factory=dict)
+    reset_seconds: dict[Key, float] = field(default_factory=dict)
 
     def __bool__(self) -> bool:
         return bool(self.remaining or self.limit)
@@ -57,6 +69,7 @@ class RateLimitHeaders:
 def parse(headers: dict[str, str]) -> RateLimitHeaders:
     """Extract whatever rate-limit information a response carries."""
     result = RateLimitHeaders()
+    renewals: dict[str, str] = {}
 
     for raw_name, raw_value in headers.items():
         match = _PATTERN.match(raw_name.strip().lower())
@@ -68,27 +81,31 @@ def parse(headers: dict[str, str]) -> RateLimitHeaders:
             continue
 
         kind = match.group("kind")
-        window = match.group("window")
-        if window:
-            result.window[unit] = window
+        key: Key = (unit, match.group("window"))
 
         if kind == "remaining":
             value = _as_int(raw_value)
             if value is not None:
-                result.remaining[unit] = value
+                result.remaining[key] = value
         elif kind == "limit":
             value = _as_int(raw_value)
             if value is not None and value > 0:
-                result.limit[unit] = value
+                result.limit[key] = value
         elif kind == "reset":
             seconds = parse_duration(raw_value)
             if seconds is not None:
-                result.reset_seconds[unit] = seconds
+                result.reset_seconds[key] = seconds
         elif kind == "renewalperiod":
             # 20260725 RG A renewal period is the window, in seconds.
             seconds = parse_duration(raw_value)
             if seconds:
-                result.window.setdefault(unit, window_for_seconds(seconds))
+                renewals.setdefault(unit, window_for_seconds(seconds))
+
+    # 20260808 ** RG #Security Applied last: a renewal period may be read before the value it names.
+    for unit, window in renewals.items():
+        for bucket in (result.remaining, result.limit, result.reset_seconds):
+            if (unit, None) in bucket and (unit, window) not in bucket:
+                bucket[(unit, window)] = bucket.pop((unit, None))
 
     return result
 

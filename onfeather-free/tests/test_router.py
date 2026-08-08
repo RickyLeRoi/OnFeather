@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import timedelta
 
 import pytest
@@ -251,3 +252,55 @@ def test_a_headline_limit_from_the_provider_raises_the_ceiling(registry, ledger,
     options = candidates(registry, ledger, now=NOW, environ=environ, min_context=10000)
 
     assert "fastcloud" in {option.provider.name for option in options}
+
+
+# -- the cost of a decision -----------------------------------------------
+
+
+def counting(ledger):
+    """Wrap the ledger's connection so every statement it runs is counted."""
+    counted = []
+
+    class Connection:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def cursor(self):
+            return Cursor(self._inner.cursor())
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    class Cursor:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def execute(self, statement, *args, **kwargs):
+            counted.append(statement)
+            return self._inner.execute(statement, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    ledger._connection = Connection(ledger._connection)
+    return counted
+
+
+def test_a_decision_costs_a_constant_number_of_queries(registry, ledger, environ):
+    """Routing asked the ledger for the status of every model of every provider,
+    and every ask was four queries under one shared lock: 84 round trips per
+    request on the default registry, on an endpoint Home Assistant polls every
+    thirty seconds. The count must not grow with the number of models."""
+    queries = counting(ledger)
+    candidates(registry, ledger, now=NOW, environ=environ)
+    small = len(queries)
+
+    provider = registry.providers["fastcloud"]
+    many = tuple(replace(provider.models[0], id=f"fast-{n}") for n in range(40))
+    registry.providers["fastcloud"] = replace(provider, models=many)
+
+    queries.clear()
+    candidates(registry, ledger, now=NOW, environ=environ)
+
+    assert len(queries) == small
+    assert small <= 8, queries

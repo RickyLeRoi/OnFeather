@@ -22,6 +22,9 @@ STATUSES = (STATUS_PROPOSED, STATUS_CONFIRMED, STATUS_REJECTED)
 
 TYPES = ("fact", "preference", "project", "reference")
 
+#: 20260808 ** RG #Security The only shape derive_id produces; anything else is regenerated.
+ID_PATTERN = re.compile(r"^[0-9a-f]{6,64}$")
+
 
 class MemoryError_(Exception):
     """Raised when a memory file cannot be parsed."""
@@ -118,7 +121,7 @@ def parse(text: str, path: Path | None = None) -> Memory:
 
     body = match.group("body")
     return Memory(
-        id=str(meta.get("id") or derive_id(body)),
+        id=_as_id(meta.get("id"), body),
         body=body,
         type=str(meta.get("type", "fact")),
         status=str(meta.get("status", STATUS_PROPOSED)),
@@ -169,7 +172,9 @@ def slug(memory: Memory) -> str:
     `Store.path_for`."""
     words = re.findall(r"[a-z0-9]+", memory.summary.lower())[:6]
     stem = "-".join(words) or "memory"
-    return f"{stem}-{memory.id[:6]}"
+    # 20260808 ** RG #Security Checked again here: slug is the last stop before the filesystem.
+    suffix = re.sub(r"[^0-9a-f]", "", memory.id.lower())[:6] or "000000"
+    return f"{stem}-{suffix}"
 
 
 def wikilinks(text: str) -> list[str]:
@@ -252,6 +257,19 @@ def _as_date(value: object) -> date | None:
         except ValueError:
             return None
     return None
+
+
+def _as_id(value: object, body: str) -> str:
+    """The id the file declares, or a fresh one derived from the content.
+
+    An id is an identity: it dedupes on `add`, resolves a `[[link]]` by prefix,
+    and reaches the filesystem through `slug`. Anything that is not the hex
+    digest this module produces is regenerated rather than trusted — a
+    hand-edited `id: ../../x` used to build directories inside the store and
+    hide every memory written under them from `glob("*.md")`.
+    """
+    text = str(value or "").strip().lower()
+    return text if ID_PATTERN.match(text) else derive_id(body)
 
 
 def _as_confidence(value: object, default: float = 1.0) -> float:

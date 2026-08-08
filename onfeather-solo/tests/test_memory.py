@@ -93,6 +93,35 @@ def test_different_bodies_get_different_ids():
     assert create("a").id != create("b").id
 
 
+@pytest.mark.parametrize(
+    "declared",
+    ["../../escaped", "a/b", "not hex at all", "", "AB", "x" * 80],
+)
+def test_an_id_that_is_not_a_digest_is_regenerated(declared):
+    """An id reaches the filesystem through `slug` and resolves links by prefix,
+    so a hand-edited one that is not the shape this module produces is not
+    trusted. `id: ../../x` built directories inside the store and hid every
+    memory written under them from `glob("*.md")`."""
+    m = parse(f"---\nid: {declared}\ntype: fact\n---\nsomething memorable\n")
+    assert m.id == memory_module.derive_id("something memorable")
+
+
+def test_a_well_formed_id_is_kept():
+    """Regenerating a good id would rewrite identity on every read."""
+    m = parse("---\nid: abc123def456\ntype: fact\n---\nsomething memorable\n")
+    assert m.id == "abc123def456"
+
+
+@pytest.mark.parametrize("identifier", ["../../escaped", "a/b", "", "..", "C:\\x"])
+def test_a_slug_never_carries_a_path_separator(identifier):
+    """Defence in depth: `slug` is the last stop before the filesystem, and an
+    id can also be set after parsing."""
+    m = create("something memorable")
+    m.id = identifier
+    stem = memory_module.slug(m)
+    assert not set(stem) & set("/\\."), stem
+
+
 def test_new_memories_start_proposed():
     """Nothing enters memory unreviewed."""
     assert create("x").status == STATUS_PROPOSED

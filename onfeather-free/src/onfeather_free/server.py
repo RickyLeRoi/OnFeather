@@ -20,6 +20,7 @@ import contextlib
 import hashlib
 import hmac
 import json
+import sys
 import threading
 import time
 import traceback
@@ -223,6 +224,10 @@ class Router:
         # 20260804 ++ RG #HASS Rebound whole under the GIL; worker threads need no lock.
         self.last: Served | None = None
 
+    def close(self) -> None:
+        """Release the upstream connection pool. The ledger is the caller's."""
+        self.client.close()
+
     def models(self) -> list[dict]:
         """Everything routable right now, plus the virtual `auto` model."""
         listed: list[dict] = [
@@ -260,11 +265,13 @@ class Router:
     def retry_after(self) -> int | None:
         """Seconds until the first quota window turns over, if any is locked."""
         now = datetime.now(timezone.utc)
-        waits = [
-            self.ledger.status(provider, now).locked_until
+        # 20260808 ** RG #Security Only lockouts are needed here; one read gives them all.
+        lockouts = self.ledger.snapshot(now, providers=self.registry.providers).lockouts
+        pending = [
+            lockouts[provider.name] - time.time()
             for provider in self.registry.usable()
+            if provider.name in lockouts
         ]
-        pending = [until - time.time() for until in waits if until is not None]
         return max(1, int(min(pending))) if pending else None
 
 
@@ -588,7 +595,22 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, _as_openai_response(result), extra=headers)
 
     def _fail(self, error: CompletionError) -> None:
-        """Answer a total failure with the status that provokes the right retry."""
+        """Answer a total failure with the status that provokes the right retry.
+
+        The caller is told which providers were tried and how each one refused,
+        never what they said while refusing: those bodies carry organisation and
+        project ids, and on the loopback default the caller is nobody in
+        particular. The full text goes to stderr, where the operator is.
+        """
+        upstream = "; ".join(
+            f"{attempt.provider}/{attempt.model}: {attempt.detail}"
+            for attempt in error.attempts
+            if attempt.detail
+        )
+        if upstream:
+            # 20260808 ** RG #Security Unconditional: log_error is silenced without --verbose.
+            print(f"upstream refused: {upstream}", file=sys.stderr)
+
         detail = "; ".join(
             f"{attempt.provider}: {attempt.error}" for attempt in error.attempts
         )
@@ -609,10 +631,12 @@ class Handler(BaseHTTPRequestHandler):
     def _status_payload(self) -> dict:
         now = datetime.now(timezone.utc)
         configured = configured_providers(self.router.registry)
+        # 20260808 ** RG #Security Shared with candidates() below: Home Assistant polls this.
+        view = self.router.ledger.snapshot(now, providers=self.router.registry.providers)
 
         providers = []
         for provider in self.router.registry.usable():
-            state = self.router.ledger.status(provider, now)
+            state = self.router.ledger.status(provider, now, snapshot=view)
             providers.append({
                 "name": provider.name,
                 "label": provider.label,
@@ -636,7 +660,7 @@ class Handler(BaseHTTPRequestHandler):
 
         routable = candidates(
             self.router.registry, self.router.ledger,
-            strategy=self.router.strategy, now=now,
+            strategy=self.router.strategy, now=now, snapshot=view,
         )
         last = self.router.last
         payload = {
@@ -763,3 +787,4 @@ def serve(
         print("\nstopping")
     finally:
         server.server_close()
+        router.close()

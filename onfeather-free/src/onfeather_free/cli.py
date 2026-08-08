@@ -18,6 +18,9 @@ from .router import NoRouteAvailable
 
 DEFAULT_LEDGER = Path.home() / ".onfeather" / "free.db"
 
+#: 20260808 ** RG #Security Sits beside the ledger, holds nothing but capability answers.
+DISCOVERY_CACHE = "discovery.json"
+
 
 def build_parser() -> argparse.ArgumentParser:
     """Assemble the CLI. Separate from main() so tests can build it without
@@ -109,14 +112,19 @@ def main(argv: list[str] | None = None) -> int:
 def _open(args: argparse.Namespace) -> tuple[Registry, Ledger]:
     registry = registry_module.load(args.registry)
     # 20260725 RG Local model lists are per-machine; ask the runner.
-    discovery.discover_local(registry)
+    # 20260808 ** RG #Security Capability probes cached beside the ledger; the list stays live.
+    discovery.discover_local(registry, cache=Path(args.ledger).with_name(DISCOVERY_CACHE))
     return registry, Ledger(args.ledger)
 
 
 def _cmd_chat(args: argparse.Namespace) -> int:
     registry, ledger = _open(args)
-    client = Client(registry, ledger)
+    # 20260808 ** RG #Security The client owns a connection pool now; hand it back on the way out.
+    with Client(registry, ledger) as client:
+        return _chat(args, client, ledger)
 
+
+def _chat(args: argparse.Namespace, client: Client, ledger: Ledger) -> int:
     try:
         result = client.complete(
             [{"role": "user", "content": args.prompt}],
@@ -129,7 +137,11 @@ def _cmd_chat(args: argparse.Namespace) -> int:
     except CompletionError as error:
         print(f"error: {error}", file=sys.stderr)
         for attempt in error.attempts:
-            print(f"  {attempt.provider}/{attempt.model}: {attempt.error}", file=sys.stderr)
+            # 20260808 ** RG #Security The upstream body is withheld over HTTP, not from you.
+            said = f" — {attempt.detail}" if attempt.detail else ""
+            print(
+                f"  {attempt.provider}/{attempt.model}: {attempt.error}{said}", file=sys.stderr
+            )
         ledger.close()
         return 1
 
@@ -152,13 +164,15 @@ def _cmd_status(args: argparse.Namespace) -> int:
     registry, ledger = _open(args)
     configured = router_module.configured_providers(registry)
     now = datetime.now(timezone.utc)
+    # 20260808 ** RG #Security One read for the whole table, not four per limit per provider.
+    view = ledger.snapshot(now, providers=registry.providers)
 
     rows = []
     for provider in registry.usable():
         known = provider.name in configured
         if not known and not args.all:
             continue
-        state = ledger.status(provider, now)
+        state = ledger.status(provider, now, snapshot=view)
         rows.append((provider, state, known))
 
     if not rows:

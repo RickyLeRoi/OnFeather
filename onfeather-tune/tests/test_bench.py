@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from onfeather_tune import bench
 
@@ -43,3 +44,36 @@ def test_measure_multi_thread_rejects_zero_threads():
     except ValueError:
         return
     raise AssertionError("expected ValueError for threads=0")
+
+
+# -- the footprint ceiling ------------------------------------------------
+
+
+@pytest.mark.parametrize("threads", [1, 2, 4, 8, 16, 24, 64, 128, 256, 1024])
+def test_the_workspace_never_exceeds_the_ceiling(threads):
+    """A 128-core EPYC — the machine the README is written around — asked for
+    12.3 GB of workspace for a microbenchmark, which is a MemoryError or the
+    OOM killer on a host with memory already spoken for."""
+    used, per_thread_mb = bench.workspace_plan(threads)
+    total = used * per_thread_mb * bench.ARRAYS_PER_WORKSPACE
+
+    assert total <= bench.MAX_TOTAL_MB
+    assert 1 <= used <= threads
+
+
+@pytest.mark.parametrize("threads", [1, 2, 4, 8, 16, 24, 64, 128])
+def test_every_thread_still_gets_more_than_cache(threads):
+    """Below the floor a thread's share is served by L3 and the number stops
+    describing DRAM at all."""
+    _used, per_thread_mb = bench.workspace_plan(threads)
+    assert per_thread_mb >= bench.MIN_PER_THREAD_MB
+
+
+def test_the_thread_count_is_honoured_while_it_fits():
+    assert bench.workspace_plan(8)[0] == 8
+    assert bench.workspace_plan(16)[0] == 16
+
+
+def test_a_128_core_host_measures_fewer_threads_rather_than_dying():
+    used, _per_thread_mb = bench.workspace_plan(128)
+    assert used < 128

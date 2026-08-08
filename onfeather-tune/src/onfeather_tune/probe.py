@@ -14,6 +14,7 @@ import platform
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import psutil
@@ -182,8 +183,12 @@ def detect_memory(*, measure: bool = True, threads: int | None = None) -> Memory
         allowed = usable_cores()
         # 20260725 RG Never exceed our thread entitlement: 128 on an 18-core share got 25 GB/s.
         worker_count = threads or (min(physical, allowed) if allowed else physical)
-        info.bandwidth_single_gbs = round(bench.measure_single_thread(), 2)
-        info.bandwidth_multi_gbs = round(bench.measure_multi_thread(worker_count), 2)
+        try:
+            info.bandwidth_single_gbs = round(bench.measure_single_thread(), 2)
+            info.bandwidth_multi_gbs = round(bench.measure_multi_thread(worker_count), 2)
+        except (MemoryError, ValueError) as error:
+            # 20260808 ** RG #Security This module degrades to None; a partial profile still plans.
+            print(f"warning: bandwidth benchmark skipped: {error}", file=sys.stderr)
     return info
 
 

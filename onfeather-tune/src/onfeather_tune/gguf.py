@@ -15,6 +15,7 @@ Format reference: GGUF v3 (ggml-org/ggml, docs/gguf.md).
 
 from __future__ import annotations
 
+import contextlib
 import struct
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -28,6 +29,15 @@ DEFAULT_ALIGNMENT = 32
 
 # 20260725 RG Long arrays are walked, not materialised.
 LARGE_ARRAY_THRESHOLD = 1024
+
+# 20260808 ** RG #Security No legitimate tensor name or metadata key comes near this.
+MAX_STRING_BYTES = 1 << 20
+
+# 20260808 ** RG #Security Real GGUF metadata does not nest past two levels.
+MAX_ARRAY_DEPTH = 32
+
+# 20260808 ** RG #Security A tensor has a handful of dimensions, never four billion.
+MAX_TENSOR_DIMENSIONS = 8
 
 
 class ValueType(IntEnum):
@@ -418,11 +428,24 @@ def _as_int(value: object) -> int | None:
 
 
 class _Cursor:
-    """Sequential reader that tracks absolute position for offset arithmetic."""
+    """Sequential reader that tracks absolute position for offset arithmetic.
 
-    def __init__(self, stream: BinaryIO, big_endian: bool = False) -> None:
+    Every count in a GGUF header is a u64 the file itself declares, and this
+    module is pointed at files downloaded from the internet — the README plans
+    against remote models before fetching them. So nothing declared is believed
+    on its own: a length is checked against the size of the file that claims it
+    before a byte is allocated, and nesting is checked against a depth no real
+    metadata approaches. Everything that fails becomes GGUFError, which the
+    callers already handle.
+    """
+
+    def __init__(
+        self, stream: BinaryIO, big_endian: bool = False, size: int | None = None
+    ) -> None:
         self._stream = stream
         self._prefix = ">" if big_endian else "<"
+        self._size = size
+        self._depth = 0
 
     @property
     def position(self) -> int:
@@ -446,8 +469,22 @@ class _Cursor:
     def u64(self) -> int:
         return int(self.scalar("Q", 8))
 
+    def plausible(self, count: int, each: int, what: str) -> int:
+        """A declared count, refused when the file is too small to hold it."""
+        if count < 0 or (self._size is not None and count * each > self._size):
+            raise GGUFError(
+                f"header declares {count} {what} in a {self._size}-byte file"
+            )
+        return count
+
     def string(self) -> str:
-        return self.read(self.u64()).decode("utf-8", errors="replace")
+        length = self.u64()
+        if length > MAX_STRING_BYTES:
+            # 20260808 ** RG #Security A declared 2**63 tries an exabyte before finding the EOF.
+            raise GGUFError(f"implausible string length {length} in header")
+        return self.read(self.plausible(length, 1, "string bytes")).decode(
+            "utf-8", errors="replace"
+        )
 
     def value(self, value_type: int) -> object:
         if value_type == ValueType.STRING:
@@ -461,12 +498,23 @@ class _Cursor:
 
     def array(self) -> object:
         element_type = self.u32()
-        count = self.u64()
+        # 20260808 ** RG #Security Every element costs a byte of file, so the file caps the count.
+        count = self.plausible(self.u64(), 1, "array elements")
 
+        self._depth += 1
+        if self._depth > MAX_ARRAY_DEPTH:
+            # 20260808 ** RG #Security 12 bytes buy a nesting level; 1 MB buys 87,000 of them.
+            raise GGUFError(f"metadata nested deeper than {MAX_ARRAY_DEPTH} levels")
+        try:
+            return self._elements(element_type, count)
+        finally:
+            self._depth -= 1
+
+    def _elements(self, element_type: int, count: int) -> object:
         if count > LARGE_ARRAY_THRESHOLD:
             if element_type == ValueType.STRING:
                 for _ in range(count):
-                    self.skip(self.u64())
+                    self.skip(self.plausible(self.u64(), 1, "string bytes"))
             elif element_type == ValueType.ARRAY:
                 for _ in range(count):
                     self.array()
@@ -474,7 +522,7 @@ class _Cursor:
                 fmt = _SCALAR_FORMATS.get(element_type)
                 if fmt is None:
                     raise GGUFError(f"unknown array element type {element_type}")
-                self.skip(fmt[1] * count)
+                self.skip(self.plausible(count, fmt[1], "array elements") * fmt[1])
             return f"<{count} elements omitted>"
 
         return [self.value(element_type) for _ in range(count)]
@@ -489,7 +537,27 @@ def read(source: str | Path | BinaryIO) -> GGUFModel:
     return _read_stream(source, None)
 
 
+def _size_of(stream: BinaryIO, path: Path | None) -> int | None:
+    """How many bytes exist, when that can be established without reading them.
+
+    It is the only independent check on the counts the header declares, so it
+    is worth asking a seekable stream as well as a path. A stream that is
+    neither returns None and simply gets the fixed ceilings.
+    """
+    if path is not None:
+        with contextlib.suppress(OSError):
+            return path.stat().st_size
+    with contextlib.suppress(OSError, ValueError, AttributeError):
+        here = stream.tell()
+        size = stream.seek(0, 2)
+        stream.seek(here)
+        return int(size)
+    return None
+
+
 def _read_stream(stream: BinaryIO, path: Path | None) -> GGUFModel:
+    size = _size_of(stream, path)
+
     magic = stream.read(4)
     if magic != GGUF_MAGIC:
         raise GGUFError(f"not a GGUF file: magic is {magic!r}, expected {GGUF_MAGIC!r}")
@@ -504,9 +572,10 @@ def _read_stream(stream: BinaryIO, path: Path | None) -> GGUFModel:
     if version not in SUPPORTED_VERSIONS:
         raise GGUFError(f"unsupported GGUF version {version}, expected one of {SUPPORTED_VERSIONS}")
 
-    cursor = _Cursor(stream, big_endian)
-    tensor_count = cursor.u64()
-    metadata_count = cursor.u64()
+    cursor = _Cursor(stream, big_endian, size=size)
+    # 20260808 ** RG #Security A header cannot describe more entries than the file has bytes.
+    tensor_count = cursor.plausible(cursor.u64(), 1, "tensors")
+    metadata_count = cursor.plausible(cursor.u64(), 1, "metadata entries")
 
     metadata: dict[str, object] = {}
     for _ in range(metadata_count):
@@ -516,7 +585,10 @@ def _read_stream(stream: BinaryIO, path: Path | None) -> GGUFModel:
     tensors = []
     for _ in range(tensor_count):
         name = cursor.string()
-        dimensions = tuple(cursor.u64() for _ in range(cursor.u32()))
+        rank = cursor.u32()
+        if rank > MAX_TENSOR_DIMENSIONS:
+            raise GGUFError(f"tensor {name!r} declares {rank} dimensions")
+        dimensions = tuple(cursor.u64() for _ in range(rank))
         tensors.append(
             TensorInfo(
                 name=name,

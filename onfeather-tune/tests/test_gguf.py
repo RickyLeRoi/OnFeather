@@ -1,4 +1,5 @@
 import struct
+from io import BytesIO
 
 import pytest
 from conftest import build_gguf, moe_metadata, moe_tensors
@@ -266,3 +267,73 @@ def test_active_bytes_equals_total_for_dense_models():
 def test_bytes_by_role_sums_to_total():
     model = gguf.read(build_gguf(moe_metadata(), moe_tensors()))
     assert sum(model.bytes_by_role().values()) == model.total_bytes
+
+
+# -- a GGUF is untrusted input --------------------------------------------
+
+"""`of inspect` and `of plan` are meant to be pointed at a file just
+downloaded, and at a remote one over range requests before it is downloaded at
+all, so every count in the header is hostile until checked against the size of
+the file that declares it."""
+
+
+def malformed(tensor_count: int = 0, metadata_count: int = 0) -> bytes:
+    return b"GGUF" + struct.pack("<IQQ", 3, tensor_count, metadata_count)
+
+
+def test_an_absurd_string_length_is_refused_before_allocating():
+    """A declared 2**63 attempted an exabyte before discovering the EOF."""
+    blob = malformed(metadata_count=1) + struct.pack("<Q", 2**63)
+    with pytest.raises(GGUFError, match="implausible string length"):
+        gguf.read(BytesIO(blob))
+
+
+def test_a_string_longer_than_the_file_is_refused():
+    blob = malformed(metadata_count=1) + struct.pack("<Q", 1 << 19)
+    with pytest.raises(GGUFError, match="string bytes"):
+        gguf.read(BytesIO(blob))
+
+
+def test_metadata_nested_beyond_the_depth_limit_is_refused():
+    """Each level costs twelve bytes of file, so a 1 MB file buys 87,000 of
+    them and the recursion dies before the parser notices."""
+    blob = malformed(metadata_count=1) + struct.pack("<Q", 1) + b"k"
+    blob += struct.pack("<I", int(gguf.ValueType.ARRAY))
+    blob += struct.pack("<IQ", int(gguf.ValueType.ARRAY), 1) * 20_000
+
+    with pytest.raises(GGUFError, match="nested deeper than"):
+        gguf.read(BytesIO(blob))
+
+
+@pytest.mark.parametrize(
+    ("tensors", "metadata", "expected"),
+    [(2**60, 0, "tensors"), (0, 2**60, "metadata entries")],
+)
+def test_a_count_the_file_cannot_hold_is_refused(tensors, metadata, expected):
+    with pytest.raises(GGUFError, match=expected):
+        gguf.read(BytesIO(malformed(tensors, metadata)))
+
+
+def test_an_absurd_tensor_rank_is_refused():
+    blob = malformed(tensor_count=1) + struct.pack("<Q", 1) + b"t"
+    blob += struct.pack("<I", 2**31)
+    with pytest.raises(GGUFError, match="dimensions"):
+        gguf.read(BytesIO(blob))
+
+
+def test_an_array_declaring_more_elements_than_the_file_holds_is_refused():
+    blob = malformed(metadata_count=1) + struct.pack("<Q", 1) + b"k"
+    blob += struct.pack("<I", int(gguf.ValueType.ARRAY))
+    blob += struct.pack("<IQ", int(gguf.ValueType.UINT32), 2**40)
+    with pytest.raises(GGUFError, match="array elements"):
+        gguf.read(BytesIO(blob))
+
+
+def test_ordinary_files_still_parse(tmp_path):
+    """The ceilings must not be in the way of anything real."""
+    stream = build_gguf(moe_metadata(), moe_tensors())
+    path = tmp_path / "model.gguf"
+    path.write_bytes(stream.getvalue())
+
+    assert gguf.read(path).block_count == gguf.read(build_gguf(
+        moe_metadata(), moe_tensors())).block_count

@@ -21,6 +21,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
+from collections.abc import Iterable
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -38,7 +39,9 @@ CREATE TABLE IF NOT EXISTS events (
     requests  INTEGER NOT NULL DEFAULT 0,
     tokens    INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS events_provider_at ON events (provider, at);
+-- 20260808 ** RG #Security Covering: a routing sum reads the index alone, never the rows.
+CREATE INDEX IF NOT EXISTS events_totals ON events (provider, at, requests, tokens);
+DROP INDEX IF EXISTS events_provider_at;
 
 -- The provider's own count, which supersedes ours until we spend more.
 CREATE TABLE IF NOT EXISTS observations (
@@ -124,6 +127,51 @@ class ProviderStatus:
         )
 
 
+class LedgerSnapshot:
+    """Everything one routing decision needs, gathered once instead of per limit.
+
+    `candidates` asks for the status of every model of every provider, and each
+    ask was four queries under a shared lock — 84 round trips per request on the
+    default registry, on an endpoint Home Assistant polls every thirty seconds.
+
+    The three small tables are read whole: one row per provider and limit. The
+    events table is not, because it grows without bound and summing its rows in
+    Python is slower than letting SQLite do it. Instead every distinct window
+    start is summed for all providers at once, and remembered — a decision asks
+    about a handful of distinct moments however many models it weighs.
+    """
+
+    def __init__(
+        self,
+        ledger: Ledger,
+        at: float,
+        lockouts: dict[str, float],
+        observations: dict[tuple[str, str], tuple[int, float]],
+        observed_limits: dict[tuple[str, str], int],
+        providers: tuple[str, ...] = (),
+    ) -> None:
+        self.at = at
+        self.lockouts = lockouts
+        self.observations = observations
+        self.observed_limits = observed_limits
+        self.providers = providers
+        self._ledger = ledger
+        self._sums: dict[tuple[float, bool], dict[str, tuple[int, int]]] = {}
+
+    def spent(self, provider: str, unit: str, since: float, *, inclusive: bool) -> int:
+        """What `provider` spent of `unit` after `since`."""
+        key = (since, inclusive)
+        totals = self._sums.get(key)
+        if totals is None:
+            # 20260808 ** RG #Security Every provider in one grouped sum, then never asked again.
+            totals = self._ledger._spent_by_provider(
+                since, inclusive=inclusive, providers=self.providers
+            )
+            self._sums[key] = totals
+        requests, tokens = totals.get(provider, (0, 0))
+        return requests if unit == "requests" else tokens
+
+
 class Ledger:
     """Persistent record of what has been spent where."""
 
@@ -206,13 +254,14 @@ class Ledger:
         moment = at if at is not None else time.time()
         recorded = 0
 
-        for unit, value in parsed.limit.items():
-            key = self._limit_key_for(provider, unit, parsed.window.get(unit))
+        # 20260808 ** RG #Security Per (unit, window): one map per unit lost a whole window.
+        for (unit, window), value in parsed.limit.items():
+            key = self._limit_key_for(provider, unit, window)
             if key is not None:
                 self.observe_limit(provider.name, key, value, at=moment)
 
-        for unit, remaining in parsed.remaining.items():
-            key = self._limit_key_for(provider, unit, parsed.window.get(unit))
+        for (unit, window), remaining in parsed.remaining.items():
+            key = self._limit_key_for(provider, unit, window)
             if key is None:
                 continue
             self.observe(provider.name, key, remaining, at=moment)
@@ -293,17 +342,78 @@ class Ledger:
             )
             return int(cursor.fetchone()[0])
 
-    def limit_status(self, provider: str, rate_limit: RateLimit, now: datetime) -> LimitStatus:
-        window_start = rate_limit.window_start(now).timestamp()
+    def snapshot(
+        self, now: datetime | None = None, *, providers: Iterable[str] = ()
+    ) -> LedgerSnapshot:
+        """Read the small tables once, for one routing decision.
 
-        observed_limit = self._observed_limit(provider, rate_limit.key)
+        `observations`, `observed_limits` and `lockouts` hold one row per
+        provider and limit, so reading them whole costs one query each where
+        the old path paid one per limit of per model of per provider.
+
+        Naming the providers is worth doing wherever the caller knows them: the
+        events index leads on `provider`, so a sum that names them seeks instead
+        of scanning the whole index — 0.06 ms against 3.1 ms for a per-minute
+        window on a ledger holding a day of heavy use.
+        """
+        moment = (now or datetime.now(timezone.utc)).timestamp()
+        with self._lock, closing(self._connection.cursor()) as cursor:
+            cursor.execute("SELECT provider, until FROM lockouts WHERE until > ?", (moment,))
+            lockouts = {row[0]: float(row[1]) for row in cursor.fetchall()}
+
+            cursor.execute("SELECT provider, limit_key, remaining, at FROM observations")
+            observations = {
+                (row[0], row[1]): (int(row[2]), float(row[3])) for row in cursor.fetchall()
+            }
+
+            cursor.execute("SELECT provider, limit_key, value FROM observed_limits")
+            observed = {(row[0], row[1]): int(row[2]) for row in cursor.fetchall()}
+
+        return LedgerSnapshot(
+            self, moment, lockouts, observations, observed, tuple(providers)
+        )
+
+    def _spent_by_provider(
+        self, since: float, *, inclusive: bool, providers: tuple[str, ...] = ()
+    ) -> dict[str, tuple[int, int]]:
+        """(requests, tokens) since `since`, for every provider, in one query."""
+        comparison = ">=" if inclusive else ">"
+        if providers:
+            names = ",".join("?" * len(providers))
+            where, params = f"provider IN ({names}) AND at {comparison} ?", (*providers, since)
+        else:
+            where, params = f"at {comparison} ?", (since,)
+
+        with self._lock, closing(self._connection.cursor()) as cursor:
+            cursor.execute(
+                "SELECT provider, COALESCE(SUM(requests), 0), COALESCE(SUM(tokens), 0) "
+                f"FROM events WHERE {where} GROUP BY provider",
+                params,
+            )
+            return {row[0]: (int(row[1]), int(row[2])) for row in cursor.fetchall()}
+
+    def limit_status(
+        self,
+        provider: str,
+        rate_limit: RateLimit,
+        now: datetime,
+        snapshot: LedgerSnapshot | None = None,
+    ) -> LimitStatus:
+        """Status of one limit, from a snapshot when the caller already has one."""
+        view = snapshot if snapshot is not None else self.snapshot(now)
+        window_start = rate_limit.window_start(now).timestamp()
+        key = (provider, rate_limit.key)
+
+        observed_limit = view.observed_limits.get(key)
         effective = observed_limit if observed_limit else rate_limit.limit
-        observation = self._observation(provider, rate_limit.key)
+        observation = view.observations.get(key)
 
         if observation is not None:
             remaining_at_observation, observed_at = observation
             if observed_at >= window_start:
-                spent_since = self._sum_since(provider, rate_limit.unit, observed_at)
+                spent_since = view.spent(
+                    provider, rate_limit.unit, observed_at, inclusive=False
+                )
                 remaining = max(remaining_at_observation - spent_since, 0)
                 return LimitStatus(
                     limit=rate_limit,
@@ -314,7 +424,7 @@ class Ledger:
                     limit_observed=bool(observed_limit),
                 )
 
-        used = self.used(provider, rate_limit, now)
+        used = view.spent(provider, rate_limit.unit, window_start, inclusive=True)
         return LimitStatus(
             limit=rate_limit,
             used=used,
@@ -330,55 +440,20 @@ class Ledger:
         now: datetime | None = None,
         *,
         model_id: str | None = None,
+        snapshot: LedgerSnapshot | None = None,
     ) -> ProviderStatus:
         moment = now or datetime.now(timezone.utc)
         limits = _limits_for(provider, model_id)
+        # 20260808 ** RG #Security One read for the whole decision, not four per limit.
+        view = snapshot if snapshot is not None else self.snapshot(moment)
 
-        locked_until = self._lockout(provider.name, moment.timestamp())
         return ProviderStatus(
             provider=provider,
-            limits=tuple(self.limit_status(provider.name, rate, moment) for rate in limits),
-            locked_until=locked_until,
+            limits=tuple(
+                self.limit_status(provider.name, rate, moment, view) for rate in limits
+            ),
+            locked_until=view.lockouts.get(provider.name),
         )
-
-    # -- internals --------------------------------------------------------
-
-    def _observed_limit(self, provider: str, limit_key: str) -> int | None:
-        with self._lock, closing(self._connection.cursor()) as cursor:
-            cursor.execute(
-                "SELECT value FROM observed_limits WHERE provider = ? AND limit_key = ?",
-                (provider, limit_key),
-            )
-            row = cursor.fetchone()
-        return int(row[0]) if row else None
-
-    def _observation(self, provider: str, limit_key: str) -> tuple[int, float] | None:
-        with self._lock, closing(self._connection.cursor()) as cursor:
-            cursor.execute(
-                "SELECT remaining, at FROM observations WHERE provider = ? AND limit_key = ?",
-                (provider, limit_key),
-            )
-            row = cursor.fetchone()
-        return (int(row[0]), float(row[1])) if row else None
-
-    def _sum_since(self, provider: str, unit: str, since: float) -> int:
-        column = "requests" if unit == "requests" else "tokens"
-        with self._lock, closing(self._connection.cursor()) as cursor:
-            cursor.execute(
-                f"SELECT COALESCE(SUM({column}), 0) FROM events WHERE provider = ? AND at > ?",
-                (provider, since),
-            )
-            return int(cursor.fetchone()[0])
-
-    def _lockout(self, provider: str, now: float) -> float | None:
-        with self._lock, closing(self._connection.cursor()) as cursor:
-            cursor.execute("SELECT until FROM lockouts WHERE provider = ?", (provider,))
-            row = cursor.fetchone()
-        if not row:
-            return None
-        until = float(row[0])
-        return until if until > now else None
-
 
 def _limits_for(provider: Provider, model_id: str | None) -> list[RateLimit]:
     """Limits governing a request, deduplicated across models.

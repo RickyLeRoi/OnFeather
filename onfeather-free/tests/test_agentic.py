@@ -493,7 +493,23 @@ def test_a_request_every_provider_rejects_is_not_worth_retrying(gateway):
     response = gate.post({"messages": [{"role": "user", "content": "hi"}], "tools": TOOLS})
 
     assert response.status_code == 400
-    assert "tool_choice" in response.json()["error"]["message"]
+    message = response.json()["error"]["message"]
+    assert "fastcloud" in message and "400" in message
+
+
+def test_an_upstream_error_body_is_not_relayed_to_the_caller(gateway, capsys):
+    """Provider error bodies carry organisation ids, project ids and correlatable
+    request ids, and on the loopback default the caller is authenticated as
+    nobody at all. The operator still gets the whole thing on stderr."""
+    secret = "org_acme_9f21 project_prod requested by req_88a1"
+    gate = gateway(lambda request: httpx.Response(400, text=secret))
+    gate.router.registry.providers.pop("ollama")
+
+    response = gate.post({"messages": [{"role": "user", "content": "hi"}]})
+
+    assert secret not in response.text
+    assert "org_acme_9f21" not in response.text
+    assert secret in capsys.readouterr().err
 
 
 def test_an_upstream_outage_is_retryable(gateway):

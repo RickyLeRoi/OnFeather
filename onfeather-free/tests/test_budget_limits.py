@@ -114,3 +114,45 @@ def test_clear_forgets_learned_limits(ledger):
     ledger.clear("fastcloud")
 
     assert ledger.limit_status("fastcloud", MINUTE, NOW).effective_limit == 30
+
+
+def mistral_like():
+    """A provider metering the same unit over two windows, which Mistral does."""
+    return parse({
+        "providers": {
+            "twowindow": {
+                "label": "TwoWindow",
+                "base_url": "https://y.test/v1",
+                "api_key_env": "Y",
+                "models": [{
+                    "id": "m",
+                    "capabilities": ["chat"],
+                    "limits": [
+                        {"unit": "requests", "limit": 6, "window": "minute"},
+                        {"unit": "requests", "limit": 1000, "window": "day"},
+                    ],
+                }],
+            }
+        }
+    })["twowindow"]
+
+
+def test_two_windows_on_one_unit_are_recorded_separately(ledger):
+    """The minute was overwritten by the day, and the router kept routing to a
+    provider that had five requests left out of six."""
+    provider = mistral_like()
+    ledger.observe_headers(
+        provider,
+        {
+            "x-ratelimit-remaining-req-day": "900",
+            "x-ratelimit-remaining-req-minute": "5",
+            "x-ratelimit-limit-req-day": "1000",
+            "x-ratelimit-limit-req-minute": "6",
+        },
+        at=NOW.timestamp(),
+    )
+
+    minute = RateLimit(unit="requests", limit=6, window="minute")
+    day = RateLimit(unit="requests", limit=1000, window="day")
+    assert ledger.limit_status("twowindow", minute, NOW).remaining == 5
+    assert ledger.limit_status("twowindow", day, NOW).remaining == 900

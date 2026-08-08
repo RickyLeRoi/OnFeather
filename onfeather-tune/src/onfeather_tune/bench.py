@@ -21,6 +21,15 @@ import numpy as np
 DEFAULT_ARRAY_MB = 256
 DEFAULT_ITERATIONS = 5
 
+# 20260808 ** RG #Security Footprint ceiling over every thread: 128 of them asked for 12 GB.
+MAX_TOTAL_MB = 2048
+
+# 20260725 RG Below this a thread's share fits in cache and measures the wrong thing.
+MIN_PER_THREAD_MB = 32
+
+#: 20260725 RG _allocate builds three arrays, so a workspace costs three times its size.
+ARRAYS_PER_WORKSPACE = 3
+
 
 def _kernel(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> None:
     """STREAM 'add': a = b + c. Two reads and one write per element.
@@ -74,6 +83,29 @@ def measure_single_thread(
     return _bytes_moved(size_mb) / seconds / 1e9
 
 
+def workspace_plan(threads: int, size_mb: int = DEFAULT_ARRAY_MB) -> tuple[int, int]:
+    """How many threads to run and how much each gets, inside the ceiling.
+
+    Ordinarily the total is held constant by splitting `size_mb` between the
+    threads. The per-thread floor is what breaks that: below it a thread's
+    share fits in cache and measures the wrong thing, so past a certain count
+    the total starts growing again — 128 threads at the floor is 12 GB of
+    workspace for a microbenchmark, which is a MemoryError or the OOM killer
+    on the exact machines the floor exists for.
+
+    So the footprint wins over the thread count. Bandwidth saturates well
+    before a hundred threads on any real bus, which makes measuring fewer of
+    them a far smaller error than not measuring at all.
+    """
+    per_thread_mb = max(size_mb // threads, MIN_PER_THREAD_MB)
+    budget_mb = MAX_TOTAL_MB // ARRAYS_PER_WORKSPACE
+
+    if per_thread_mb * threads > budget_mb:
+        threads = max(1, budget_mb // MIN_PER_THREAD_MB)
+        per_thread_mb = MIN_PER_THREAD_MB
+    return threads, per_thread_mb
+
+
 def measure_multi_thread(
     threads: int,
     size_mb: int = DEFAULT_ARRAY_MB,
@@ -86,12 +118,14 @@ def measure_multi_thread(
     hundreds of megabytes into worker processes.
 
     Each thread gets its own arrays: sharing them would let the caches serve
-    part of the traffic and inflate the result.
+    part of the traffic and inflate the result. That makes the footprint grow
+    with the thread count, so it is capped — see `workspace_plan`, and note
+    that past the ceiling this measures fewer threads than it was asked for.
     """
     if threads < 1:
         raise ValueError("threads must be >= 1")
 
-    per_thread_mb = max(size_mb // threads, 32)
+    threads, per_thread_mb = workspace_plan(threads, size_mb)
     workspaces = [_allocate(per_thread_mb) for _ in range(threads)]
 
     # 20260725 RG Warm every workspace so page faults land outside the timing.
