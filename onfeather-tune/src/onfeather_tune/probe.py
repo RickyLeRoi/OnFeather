@@ -199,7 +199,8 @@ def detect_gpus() -> list[GpuInfo]:
 def _nvidia_gpus() -> list[GpuInfo]:
     out = _run([
         "nvidia-smi",
-        "--query-gpu=name,memory.total,memory.free,driver_version",
+        # 20260808 ** RG #Security The index is asked for, not counted: a gap would shift it.
+        "--query-gpu=index,name,memory.total,memory.free,driver_version",
         "--format=csv,noheader,nounits",
     ])
     if not out:
@@ -208,9 +209,9 @@ def _nvidia_gpus() -> list[GpuInfo]:
     gpus = []
     for line in out.strip().splitlines():
         fields = [field.strip() for field in line.split(",")]
-        if len(fields) != 4:
+        if len(fields) != 5:
             continue
-        name, total_mib, free_mib, driver = fields
+        index, name, total_mib, free_mib, driver = fields
         gpus.append(
             GpuInfo(
                 name=name,
@@ -218,9 +219,18 @@ def _nvidia_gpus() -> list[GpuInfo]:
                 total_bytes=_mib_to_bytes(total_mib),
                 free_bytes=_mib_to_bytes(free_mib),
                 driver=driver,
+                index=_as_index(index),
             )
         )
     return gpus
+
+
+def _as_index(value: str) -> int:
+    """A device index from a tool's output, or 0 when it is not a number."""
+    try:
+        return max(int(value), 0)
+    except ValueError:
+        return 0
 
 
 def _amd_gpus() -> list[GpuInfo]:
@@ -244,6 +254,7 @@ def _amd_gpus() -> list[GpuInfo]:
                 vendor="amd",
                 total_bytes=total,
                 free_bytes=(total - used) if total is not None and used is not None else None,
+                index=_as_index(card[4:]),
             )
         )
     return gpus
@@ -262,7 +273,7 @@ def _apple_gpus() -> list[GpuInfo]:
 
     total_ram = psutil.virtual_memory().total
     gpus = []
-    for entry in entries:
+    for position, entry in enumerate(entries):
         name = entry.get("sppci_model", "Apple GPU")
         dedicated = entry.get("spdisplays_vram")
         shared = entry.get("spdisplays_vram_shared")
@@ -280,6 +291,7 @@ def _apple_gpus() -> list[GpuInfo]:
                 total_bytes=total_bytes,
                 free_bytes=None,
                 unified_memory=unified,
+                index=position,
             )
         )
     return gpus

@@ -52,6 +52,10 @@ class GpuInfo:
     """True on Apple Silicon and iGPUs, where 'VRAM' is carved out of system RAM
     and the offload problem is a different one."""
     driver: str | None = None
+    index: int = 0
+    """Position in the driver's own enumeration, as `nvidia-smi` or `rocm-smi`
+    reports it. Carried because a plan sized against the largest card has to say
+    which card that was: run it on another one and the budget is fiction."""
 
 
 @dataclass

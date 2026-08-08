@@ -292,3 +292,67 @@ def test_a_ram_bound_plan_says_nothing_extra(model):
 
     assert built.ram_bound_fraction == 1.0
     assert "optimistic" not in plan_module.summarise(built)
+
+
+# -- multi-GPU ------------------------------------------------------------
+
+
+def two_gpus(vendor: str = "nvidia"):
+    """A small card first and a large one second, which is the failing shape:
+    the budget comes from the 24 GiB card, the runtime starts on the other."""
+    profile = make_profile(vram_gib=2.0)
+    profile.gpus = [
+        GpuInfo(name="Quadro P400", vendor=vendor, total_bytes=2 * GIB,
+                free_bytes=2 * GIB, index=0),
+        GpuInfo(name="RTX 3090", vendor=vendor, total_bytes=24 * GIB,
+                free_bytes=24 * GIB, index=1),
+    ]
+    return profile
+
+
+def test_the_budget_comes_from_the_largest_card(model):
+    built = make_plan(model, two_gpus())
+    assert built.gpu.name == "RTX 3090"
+    assert built.gpu_bytes_available > 20 * GIB
+
+
+def test_the_command_hides_every_card_the_plan_was_not_sized_for(model):
+    """`--main-gpu` would not be enough: the default split mode spreads the model
+    over every visible card, so the plan computed for one is not the one that runs."""
+    command = make_plan(model, two_gpus()).command(model_path="m.gguf")
+
+    assert command.startswith("CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1 llama-server")
+
+
+def test_the_bus_order_is_pinned_alongside_the_index(model):
+    """CUDA numbers devices fastest-first by default, which is not the order
+    nvidia-smi prints — so the index we probed names another card entirely."""
+    assert "CUDA_DEVICE_ORDER=PCI_BUS_ID" in make_plan(model, two_gpus()).device_env
+
+
+def test_an_amd_pair_is_masked_the_way_rocm_expects(model):
+    built = make_plan(model, two_gpus(vendor="amd"))
+    assert built.device_env == ("HIP_VISIBLE_DEVICES=1",)
+
+
+def test_one_card_needs_no_masking_at_all(model):
+    """Nothing to choose between, and an env prefix on a command people copy is noise."""
+    built = make_plan(model, make_profile(vram_gib=4.0))
+    assert built.device_env == ()
+    assert built.command(model_path="m.gguf").startswith("llama-server")
+
+
+def test_the_summary_names_the_card_it_planned_for(model):
+    text = plan_module.summarise(make_plan(model, two_gpus()))
+    assert "RTX 3090 (device 1)" in text
+
+
+def test_an_index_from_a_shared_profile_file_never_reaches_the_command(model):
+    """`of plan --profile` reads somebody else's JSON, and this string is pasted
+    into a shell: a card we cannot name by number is better left unnamed."""
+    profile = two_gpus()
+    profile.gpus[1].index = "0; rm -rf ~"
+
+    built = make_plan(model, profile)
+    assert built.device_env == ()
+    assert built.command(model_path="m.gguf").startswith("llama-server")

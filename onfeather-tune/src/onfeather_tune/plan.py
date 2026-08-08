@@ -67,6 +67,17 @@ class Plan:
     128-core host allowing 18, decode measured 26.4 tok/s at 18 threads, 12.8 at
     36 and 6.7 at 64. Leaving it unset there costs a 4x slowdown silently."""
 
+    gpu: GpuInfo | None = None
+    """The card this budget was computed against."""
+
+    device_env: tuple[str, ...] = ()
+    """Environment assignments that hide every other GPU from the runtime.
+
+    Empty on a single-GPU machine, where there is nothing to choose. Where
+    there is, the whole plan is sized against one card, and llama.cpp left to
+    itself both splits the model across all of them and counts them in an order
+    that is not the driver's — so a 24 GB budget can end up on a 2 GB card."""
+
     # -- accounting -------------------------------------------------------
 
     @property
@@ -132,7 +143,7 @@ class Plan:
 
     def command(self, binary: str = "llama-server", model_path: str | None = None) -> str:
         path = model_path or (str(self.model.path) if self.model.path else "MODEL.gguf")
-        parts = [binary, "-m", path, *self.llama_args()]
+        parts = [*self.device_env, binary, "-m", path, *self.llama_args()]
         return " ".join(_quote(part) for part in parts)
 
 
@@ -183,7 +194,8 @@ def make_plan(
             bytes_per_element=kv_bytes_per_element,
         )
 
-    available = _usable_vram(profile, reserve_bytes)
+    gpu = _best_gpu(profile)
+    available = _usable_vram(gpu, reserve_bytes)
     hot_bytes = model.hot_bytes
     expert_bytes = model.routed_expert_bytes
     bandwidth = profile.memory.bandwidth_multi_gbs
@@ -220,6 +232,8 @@ def make_plan(
             cpu_expert_layers=cpu_layers,
         )
 
+    plan.gpu = gpu
+    plan.device_env = _device_env(profile, gpu)
     plan.threads = _recommended_threads(profile)
     if bandwidth:
         plan.estimate = decode_estimate(plan.active_bytes_from_ram, bandwidth)
@@ -252,25 +266,51 @@ def _capacity(gpu: GpuInfo) -> int:
     return gpu.total_bytes or 0
 
 
-def _usable_vram(profile: HardwareProfile, reserve_bytes: int) -> int:
-    """VRAM we are willing to fill on the largest usable GPU.
+def _best_gpu(profile: HardwareProfile) -> GpuInfo | None:
+    """The card worth planning against, or None when there is none.
 
     Unified-memory GPUs are skipped: their 'VRAM' is the same DRAM the CPU
     already reads, so moving a tensor there buys no bandwidth and the whole
     hot/cold split stops meaning anything.
     """
     candidates = [gpu for gpu in profile.gpus if not gpu.unified_memory and gpu.total_bytes]
-    if not candidates:
+    return max(candidates, key=_capacity) if candidates else None
+
+
+def _device_env(profile: HardwareProfile, gpu: GpuInfo | None) -> tuple[str, ...]:
+    """Assignments leaving `gpu` the only card the runtime can see.
+
+    Masking rather than `--main-gpu`, because naming a main GPU would not be
+    enough: the default split mode spreads the model over every visible card,
+    so the plan computed for one of them would still not be the plan that runs.
+
+    The bus order is pinned along with it. CUDA numbers devices fastest-first
+    unless told otherwise, which is not the order `nvidia-smi` prints, so the
+    index we probed only means what it says once both agree on it.
+    """
+    if gpu is None or len(profile.gpus) < 2:
+        return ()
+    # 20260808 ** RG #Security A profile file is someone else's JSON, and this ends up in a shell.
+    if not isinstance(gpu.index, int) or isinstance(gpu.index, bool) or gpu.index < 0:
+        return ()
+    if gpu.vendor == "nvidia":
+        return ("CUDA_DEVICE_ORDER=PCI_BUS_ID", f"CUDA_VISIBLE_DEVICES={gpu.index}")
+    if gpu.vendor == "amd":
+        return (f"HIP_VISIBLE_DEVICES={gpu.index}",)
+    return ()
+
+
+def _usable_vram(gpu: GpuInfo | None, reserve_bytes: int) -> int:
+    """VRAM we are willing to fill on the card we chose."""
+    if gpu is None:
         return 0
 
-    best = max(candidates, key=_capacity)
-    capacity = _capacity(best)
-
-    if best.total_bytes and capacity < best.total_bytes * OCCUPIED_GPU_SHARE:
+    capacity = _capacity(gpu)
+    if gpu.total_bytes and capacity < gpu.total_bytes * OCCUPIED_GPU_SHARE:
         # 20260808 ** RG #Security Something else holds the card; the plan lasts only while it does.
         print(
             f"note: planning against {capacity / 1024**3:.2f} GiB free of "
-            f"{best.total_bytes / 1024**3:.2f} GiB on {best.name} — something else "
+            f"{gpu.total_bytes / 1024**3:.2f} GiB on {gpu.name} — something else "
             f"holds the rest, and this plan is only valid while that stays true",
             file=sys.stderr,
         )
@@ -295,6 +335,8 @@ def summarise(plan: Plan) -> str:
 
     lines.append("")
     lines.append("VRAM BUDGET")
+    if plan.gpu:
+        row("Card", f"{plan.gpu.name} (device {plan.gpu.index})")
     row("Available", _gib(plan.gpu_bytes_available))
     row("Hot tensors", _gib(plan.hot_bytes if not plan.hot_on_cpu else 0))
     row("KV cache", f"{_gib(plan.kv_cache_bytes)} @ {plan.context_length}")

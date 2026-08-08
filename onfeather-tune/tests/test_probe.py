@@ -127,3 +127,25 @@ def test_an_unrestricted_machine_still_benchmarks_on_physical_cores(monkeypatch)
 
     probe.detect_memory(measure=True)
     assert seen == [8]
+
+
+# -- GPUs -----------------------------------------------------------------
+
+
+def test_the_driver_states_the_index_rather_than_us_counting_rows(monkeypatch):
+    """A card missing from the output would shift every index after it."""
+    monkeypatch.setattr(
+        probe,
+        "_run",
+        lambda *_, **__: "1, RTX 3090, 24576, 24000, 550.54\n3, Quadro P400, 2048, 2000, 550.54\n",
+    )
+    gpus = probe._nvidia_gpus()
+
+    assert [gpu.index for gpu in gpus] == [1, 3]
+    assert gpus[0].name == "RTX 3090"
+    assert gpus[0].total_bytes == 24576 * 1024**2
+
+
+def test_a_card_index_that_is_not_a_number_reads_as_zero(monkeypatch):
+    monkeypatch.setattr(probe, "_run", lambda *_, **__: "N/A, RTX 3090, 24576, 24000, 550.54\n")
+    assert probe._nvidia_gpus()[0].index == 0

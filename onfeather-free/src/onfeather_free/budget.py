@@ -30,6 +30,12 @@ from pathlib import Path
 from . import headers as header_module
 from .registry import Provider, RateLimit
 
+# 20260808 ** RG #Security No window reaches past a day; a Pacific midnight one reaches 32h.
+RETENTION_SECONDS = 2 * 86400
+
+# 20260808 ** RG #Security Not on every write: one DELETE per 500 requests costs nothing.
+PRUNE_EVERY = 500
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
     id        INTEGER PRIMARY KEY,
@@ -135,7 +141,7 @@ class LedgerSnapshot:
     default registry, on an endpoint Home Assistant polls every thirty seconds.
 
     The three small tables are read whole: one row per provider and limit. The
-    events table is not, because it grows without bound and summing its rows in
+    events table is not, because it holds a row per request and summing those in
     Python is slower than letting SQLite do it. Instead every distinct window
     start is summed for all providers at once, and remembered — a decision asks
     about a handful of distinct moments however many models it weighs.
@@ -173,7 +179,13 @@ class LedgerSnapshot:
 
 
 class Ledger:
-    """Persistent record of what has been spent where."""
+    """Persistent record of what has been spent where.
+
+    Bounded in time, not in size: no limit window reaches past a day, so a row
+    older than that can only ever be read as zero. They are deleted every so
+    often during a write rather than on a timer, because a personal router has
+    nowhere to put a timer and an idle one has nothing to prune.
+    """
 
     def __init__(self, path: str | Path = ":memory:") -> None:
         self.path = str(path)
@@ -182,6 +194,7 @@ class Ledger:
         # 20260725 RG sqlite3 refuses a connection shared across threads.
         self._connection = sqlite3.connect(self.path, check_same_thread=False)
         self._lock = threading.Lock()
+        self._writes = 0
         with self._lock:
             self._connection.executescript(SCHEMA)
             self._connection.commit()
@@ -208,11 +221,17 @@ class Ledger:
         at: float | None = None,
     ) -> None:
         """Record consumption from a request we made."""
+        moment = at if at is not None else time.time()
         with self._lock, closing(self._connection.cursor()) as cursor:
             cursor.execute(
                 "INSERT INTO events (provider, model, at, requests, tokens) VALUES (?, ?, ?, ?, ?)",
-                (provider, model, at if at is not None else time.time(), requests, tokens),
+                (provider, model, moment, requests, tokens),
             )
+            self._writes += 1
+            # 20260808 ** RG #Security The first write too: a daily restart never reaches 500.
+            if self._writes == 1 or self._writes % PRUNE_EVERY == 0:
+                # 20260808 ** RG #Security Older than every window: inert by construction.
+                cursor.execute("DELETE FROM events WHERE at < ?", (moment - RETENTION_SECONDS,))
             self._connection.commit()
 
     def observe(

@@ -80,6 +80,11 @@ IDLE_TIMEOUT_SECONDS = 60.0
 
 CHARS_PER_TOKEN = 4
 
+# 20260808 ** RG #Security Nearer 1.5 in CJK: undercounting picks a model that cannot hold it.
+CJK_CHARS_PER_TOKEN = 1.5
+
+WIDE_CHAR_WEIGHT = CHARS_PER_TOKEN / CJK_CHARS_PER_TOKEN
+
 
 class Sessions:
     """Which model each ongoing run is pinned to.
@@ -157,12 +162,37 @@ def session_key(payload: dict, headers: Any = None) -> str | None:
     return hashlib.sha256(opening.encode()).hexdigest()[:16]
 
 
+def _weighted_length(value: Any) -> float:
+    """Characters in `value`, charged by how many tokens those characters cost.
+
+    Walked rather than serialised: a dumps() of the whole payload built ~160 KB
+    per turn of a long agentic run purely to call len() on it. ASCII, which is
+    almost everything, is a flag check and a length.
+
+    A CJK character is one character and two thirds of a token, so counting
+    characters undercounts it fourfold — and this number is what rules a model
+    out. The UTF-8 length pays for them without a per-character loop: three
+    bytes for a CJK codepoint against one for ASCII, so half the excess is a
+    good count of the wide ones.
+    """
+    if isinstance(value, str):
+        if value.isascii():
+            return len(value)
+        wide = (len(value.encode("utf-8", "ignore")) - len(value)) / 2
+        return (len(value) - wide) + wide * WIDE_CHAR_WEIGHT
+    if isinstance(value, dict):
+        return sum(_weighted_length(k) + _weighted_length(v) for k, v in value.items())
+    if isinstance(value, list):
+        return sum(_weighted_length(item) for item in value)
+    return len(str(value)) if value is not None else 0
+
+
 def estimated_tokens(payload: dict) -> int:
     """How big this request is, near enough to exclude a model that cannot hold it."""
-    material = json.dumps(
-        [payload.get("messages") or [], payload.get("tools") or []], ensure_ascii=False
+    material = _weighted_length(payload.get("messages") or []) + _weighted_length(
+        payload.get("tools") or []
     )
-    return len(material) // CHARS_PER_TOKEN
+    return int(material // CHARS_PER_TOKEN)
 
 
 @dataclass(frozen=True)
@@ -310,6 +340,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        # 20260808 ** RG #Security The path is echoed in a 404 body; nosniff keeps it JSON.
+        self.send_header("X-Content-Type-Options", "nosniff")
+        # 20260808 ** RG #Security Answers and quota figures are nobody's to cache.
+        self.send_header("Cache-Control", "no-store")
         if self.close_connection:
             # 20260808 ** RG #Security Announce the hang-up: a silent close is a desync of its own.
             self.send_header("Connection", "close")
@@ -317,6 +351,21 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(key, str(value))
         self.end_headers()
         self.wfile.write(body)
+
+    def send_error(self, code: int, message: str | None = None, explain: str | None = None) -> None:
+        """Answer the base class's own refusals the way every other reply is answered.
+
+        An unsupported method or an unparsable request line is handled above us,
+        and the default page is HTML echoing part of the request — the one reply
+        that would carry neither `nosniff` nor a shape a client can read.
+        """
+        if getattr(self, "command", None) == "HEAD":
+            super().send_error(code, message, explain)
+            return
+        self.close_connection = True
+        kind = "invalid_request_error" if code < 500 else "internal_error"
+        with contextlib.suppress(OSError):
+            self._error(code, message or explain or "bad request", kind)
 
     def _error(
         self,

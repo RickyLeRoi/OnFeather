@@ -191,6 +191,15 @@ CSRF against the loopback port. While no key is set, `Host` must also name the
 address the server was published on, which is what stops a domain that
 re-resolves to `127.0.0.1` from becoming same-origin with the router.
 
+The transport is plain HTTP, and there is no plan for it to be anything else:
+a personal router that terminates TLS is a certificate to renew and a private
+key to keep. Off loopback that means the key travels in clear on every request,
+and it is a long-lived credential rather than a session token — so on any
+network you do not own, put a reverse proxy with TLS in front of the port and
+publish that instead. Every reply says `Cache-Control: no-store` and
+`X-Content-Type-Options: nosniff`, so nothing in between keeps a copy of an
+answer or gets to guess that a JSON body might be a web page.
+
 ### Home Assistant
 
 [The Home Assistant integration](../HASS.md) turns this endpoint into an Assist

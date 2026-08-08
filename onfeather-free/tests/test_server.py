@@ -746,3 +746,64 @@ def test_solo_counts_appear_once_the_store_exists(live, monkeypatch, tmp_path):
 
     solo = httpx.get(f"{base}/v1/status", timeout=10).json()["solo"]
     assert solo == {"total": 1, "proposed": 1, "confirmed": 0, "rejected": 0}
+
+
+# -- response headers -----------------------------------------------------
+
+
+def test_every_reply_says_it_must_not_be_sniffed_or_stored(live):
+    base, _ = live
+    replies = [
+        httpx.get(f"{base}/health", timeout=10),
+        httpx.get(f"{base}/v1/status", timeout=10),
+        httpx.get(f"{base}/nope", timeout=10),
+        post(base, {"messages": [{"role": "user", "content": "hi"}]}),
+    ]
+    for reply in replies:
+        assert reply.headers["X-Content-Type-Options"] == "nosniff"
+        assert reply.headers["Cache-Control"] == "no-store"
+
+
+def test_a_method_we_never_implemented_answers_json_not_html(live):
+    """The base class answers its own refusals with an HTML page echoing the
+    request — the one reply that carried neither nosniff nor a parsable shape."""
+    base, _ = live
+    reply = httpx.request("PUT", f"{base}/v1/chat/completions", timeout=10)
+
+    assert reply.status_code == 501
+    assert reply.headers["Content-Type"] == "application/json"
+    assert reply.headers["X-Content-Type-Options"] == "nosniff"
+    assert "error" in reply.json()
+
+
+# -- request size estimation ----------------------------------------------
+
+
+def test_a_cjk_prompt_is_not_counted_as_a_quarter_of_itself():
+    """`min_context` excludes models that cannot hold the request, so a fourfold
+    undercount routes a run to a model that fails sixty turns in."""
+    from onfeather_free.server import estimated_tokens
+
+    latin = {"messages": [{"role": "user", "content": "word " * 800}]}
+    chinese = {"messages": [{"role": "user", "content": "字" * 4000}]}
+
+    assert estimated_tokens(chinese) > 2 * estimated_tokens(latin)
+
+
+def test_the_estimate_still_matches_the_serialised_length_it_replaced():
+    from onfeather_free.server import CHARS_PER_TOKEN, estimated_tokens
+
+    payload = {
+        "messages": [{"role": "user", "content": "x" * 4000}],
+        "tools": [{"type": "function", "function": {"name": "search", "parameters": {}}}],
+    }
+    serialised = len(json.dumps([payload["messages"], payload["tools"]])) // CHARS_PER_TOKEN
+
+    assert abs(estimated_tokens(payload) - serialised) < serialised * 0.1
+
+
+def test_the_estimate_survives_a_body_of_anything_at_all():
+    from onfeather_free.server import estimated_tokens
+
+    payload = {"messages": [{"role": None, "content": [{"n": 12.5}, True, None]}], "tools": {}}
+    assert estimated_tokens(payload) >= 0

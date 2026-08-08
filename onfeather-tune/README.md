@@ -145,6 +145,7 @@ PLAN
   Expert layers on CPU   45 of 48
 
 VRAM BUDGET
+  Card                   AMD Radeon Pro 5500M (device 0)
   Available              3.50 GiB
   Hot tensors            0.69 GiB
   KV cache               1.50 GiB @ 32768
@@ -230,6 +231,25 @@ places: it described the host instead of the container.
 `of probe` now reads cgroup limits and the affinity mask, benchmarks with the
 cores it is actually allowed, and `of plan` emits an explicit `-t` when the two
 disagree. On ordinary hardware nothing changes and no `-t` appears.
+
+### More than one GPU
+
+The budget is computed against the card with the most memory free, which on a
+box with a 3090 and a small card beside it is the whole point. Left alone,
+llama.cpp would not run it there: it splits the model across every visible
+device, and it numbers them fastest-first rather than in the order `nvidia-smi`
+prints. A 24 GiB plan executed on a 2 GiB card is an OOM the tool would have
+called optimal.
+
+So the command names the card by hiding the others, and pins the ordering that
+makes the index mean what it says:
+
+```
+CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1 llama-server -m model.gguf -ngl 99 ...
+```
+
+`HIP_VISIBLE_DEVICES` on ROCm. On a single-GPU machine nothing is emitted,
+because there is nothing to choose between.
 
 ### Hot and cold
 

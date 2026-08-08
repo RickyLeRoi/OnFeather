@@ -203,3 +203,50 @@ def test_ledger_persists_to_disk(tmp_path):
 
     with Ledger(path) as second:
         assert second.used("fastcloud", MINUTE, NOW) == 4
+
+
+# -- retention ------------------------------------------------------------
+
+ROLLING_DAY = RateLimit(unit="requests", limit=1000, window="day")
+
+
+def _rows(ledger) -> int:
+    """Rows actually on disk, which is the whole question here."""
+    return ledger._connection.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+
+
+def test_events_older_than_every_window_are_pruned(ledger):
+    """No window reaches past a day, so an older row can only ever sum as zero."""
+    from onfeather_free.budget import PRUNE_EVERY, RETENTION_SECONDS
+
+    ledger.record("fastcloud", requests=1, at=NOW.timestamp() - RETENTION_SECONDS - 3600)
+    for _ in range(PRUNE_EVERY):
+        ledger.record("fastcloud", requests=1, at=NOW.timestamp())
+
+    assert _rows(ledger) == PRUNE_EVERY
+
+
+def test_pruning_keeps_everything_a_window_can_still_reach(ledger):
+    """A daily limit resetting at Pacific midnight looks back further than a day."""
+    from onfeather_free.budget import PRUNE_EVERY
+
+    ledger.record("fastcloud", requests=7, at=NOW.timestamp() - 3600 * 20)
+    for _ in range(PRUNE_EVERY):
+        ledger.record("bigcontext", requests=1, at=NOW.timestamp())
+
+    assert ledger.used("fastcloud", ROLLING_DAY, NOW) == 7
+
+
+def test_a_restarted_ledger_prunes_without_waiting_for_five_hundred_writes(tmp_path):
+    """A personal router restarted daily may never reach the interval at all."""
+    from onfeather_free.budget import Ledger, RETENTION_SECONDS
+
+    path = tmp_path / "quota.db"
+    stale = NOW.timestamp() - RETENTION_SECONDS - 3600
+    with Ledger(path) as first:
+        for _ in range(4):
+            first.record("fastcloud", requests=1, at=stale)
+
+    with Ledger(path) as second:
+        second.record("fastcloud", requests=1, at=NOW.timestamp())
+        assert _rows(second) == 1
