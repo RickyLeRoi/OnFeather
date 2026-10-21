@@ -25,6 +25,7 @@ Streaming is the significant thing still missing.
 | `of-free providers` | ✅ working | The registry, and what still needs a key |
 | `of-free serve` | ✅ working | OpenAI-compatible endpoint, so any client can point at it |
 | `of-free reset` | ✅ working | Clear a lockout and the recorded usage for one provider, or all |
+| `of-free registry check` | ✅ working | Fail when a registry model is no longer listed by its provider |
 
 ## Isn't this LiteLLM?
 

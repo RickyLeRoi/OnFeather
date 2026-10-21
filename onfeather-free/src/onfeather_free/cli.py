@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import __version__, client as client_module, config, discovery, registry as registry_module
+from . import registry_check
 from . import router as router_module
 from . import server as server_module
 from .budget import Ledger
@@ -56,6 +57,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     providers = subcommands.add_parser("providers", help="list the registry")
     providers.set_defaults(handler=_cmd_providers)
+
+    registry_command = subcommands.add_parser("registry", help="maintain the provider registry")
+    registry_actions = registry_command.add_subparsers(dest="registry_action", required=True)
+    registry_checking = registry_actions.add_parser(
+        "check", help="fail when a registry model is no longer listed by its provider"
+    )
+    registry_checking.set_defaults(handler=_cmd_registry_check)
 
     reset = subcommands.add_parser("reset", help="clear lockouts and usage for a provider")
     reset.add_argument("provider", nargs="?", help="provider name (default: every provider)")
@@ -232,6 +240,27 @@ def _cmd_reset(args: argparse.Namespace) -> int:
     ledger.clear(args.provider)
     ledger.close()
     print(f"cleared {args.provider or 'every provider'}")
+    return 0
+
+
+def _cmd_registry_check(args: argparse.Namespace) -> int:
+    registry = registry_module.load(args.registry)
+    results = registry_check.check(registry)
+
+    for result in results:
+        label = result.provider.label
+        if result.skipped:
+            print(f"- {label}: skipped, {result.skipped}")
+        elif result.ok:
+            print(f"ok {label}: {result.checked} models listed")
+        else:
+            print(f"!! {label}: no longer listed: {', '.join(result.missing)}")
+
+    if any(not result.ok for result in results):
+        return 1
+    if all(result.skipped for result in results):
+        print("nothing could be compared: no provider was reachable with a key", file=sys.stderr)
+        return 2
     return 0
 
 
