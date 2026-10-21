@@ -35,24 +35,35 @@ providers:
     api_key_env: GROQ_API_KEY
     openai_compatible: true
     sends_rate_limit_headers: true
-    verified_at: 2026-07-25
+    verified_at: 2026-10-22
     capabilities: [chat, fast, reasoning, tools]
-    notes: Fastest free inference available. Preferred for interactive use.
+    notes: >
+      Fastest free inference available. Preferred for interactive use. Verified
+      2026-10-22: the Llama chat models were retired (model_not_found); the ids
+      below are what /models lists today. Limits are estimates from the free-tier
+      table, not read from the API.
     models:
-      - id: llama-3.3-70b-versatile
+      - id: openai/gpt-oss-120b
         capabilities: [chat, reasoning, tools, json_schema]
-        context: 128000
+        context: 131072
         limits:
           - {unit: requests, limit: 30, window: minute, reset: rolling}
-          - {unit: requests, limit: 14400, window: day, reset: utc_midnight}
+          - {unit: requests, limit: 1000, window: day, reset: utc_midnight}
+          - {unit: tokens, limit: 8000, window: minute, reset: rolling}
+      - id: openai/gpt-oss-20b
+        capabilities: [chat, fast, reasoning, tools, json_schema]
+        context: 131072
+        limits:
+          - {unit: requests, limit: 30, window: minute, reset: rolling}
+          - {unit: requests, limit: 1000, window: day, reset: utc_midnight}
+          - {unit: tokens, limit: 8000, window: minute, reset: rolling}
+      - id: qwen/qwen3.8-27b
+        capabilities: [chat, reasoning, tools]
+        context: 131072
+        limits:
+          - {unit: requests, limit: 30, window: minute, reset: rolling}
+          - {unit: requests, limit: 1000, window: day, reset: utc_midnight}
           - {unit: tokens, limit: 6000, window: minute, reset: rolling}
-      - id: llama-3.1-8b-instant
-        capabilities: [chat, fast, tools, json_schema]
-        context: 128000
-        limits:
-          - {unit: requests, limit: 30, window: minute, reset: rolling}
-          - {unit: requests, limit: 14400, window: day, reset: utc_midnight}
-          - {unit: tokens, limit: 100000, window: minute, reset: rolling}
 
   google:
     label: Google AI Studio
@@ -63,26 +74,36 @@ providers:
     # Verified 2026-07-26: sends no x-ratelimit-* headers at all, so accounting
     # here stays estimated and only a 429 corrects it.
     sends_rate_limit_headers: false
-    verified_at: 2026-07-26
+    verified_at: 2026-10-22
     capabilities: [chat, long_context, vision, reasoning, tools]
     notes: >
       Free-tier prompts may be used for model training; route private content
       elsewhere with --private. Free-tier availability is per-project: a 429
       citing "limit: 0" on generate_content_free_tier_* means the project has no
       free allowance at all, which no amount of waiting will fix.
+      Verified 2026-10-22: the 2.0 models are gone, and 2.5-flash / 2.5-flash-lite
+      are still listed by /models yet answer 404 "no longer available to new
+      users" — a listing does not prove a key can use a model, only a call does.
+      Each id below answered 200. Limits are estimates from the free-tier table.
     models:
-      - id: gemini-2.0-flash
+      - id: gemini-3.8-flash
+        capabilities: [chat, long_context, vision, reasoning, tools, json_schema]
+        context: 1048576
+        limits:
+          - {unit: requests, limit: 10, window: minute, reset: rolling}
+          - {unit: requests, limit: 250, window: day, reset: pacific_midnight}
+      - id: gemini-3.5-flash-lite
         capabilities: [chat, long_context, vision, fast, tools, json_schema]
-        context: 1000000
+        context: 1048576
         limits:
           - {unit: requests, limit: 15, window: minute, reset: rolling}
-          - {unit: requests, limit: 1500, window: day, reset: pacific_midnight}
-      - id: gemini-2.0-flash-lite
-        capabilities: [chat, fast, tools, json_schema]
-        context: 1000000
+          - {unit: requests, limit: 1000, window: day, reset: pacific_midnight}
+      - id: gemini-3.1-flash-lite
+        capabilities: [chat, long_context, vision, fast, tools, json_schema]
+        context: 1048576
         limits:
-          - {unit: requests, limit: 30, window: minute, reset: rolling}
-          - {unit: requests, limit: 1500, window: day, reset: pacific_midnight}
+          - {unit: requests, limit: 15, window: minute, reset: rolling}
+          - {unit: requests, limit: 1000, window: day, reset: pacific_midnight}
 
   cerebras:
     label: Cerebras
@@ -90,9 +111,10 @@ providers:
     api_key_env: CEREBRAS_API_KEY
     openai_compatible: true
     sends_rate_limit_headers: true
-    verified_at: 2026-07-26
+    verified_at: 2026-10-22
     capabilities: [chat, fast]
     notes: >
+      Verified 2026-10-22: gemma-4-31b was archived; /models lists two chat models.
       Verified 2026-07-26: answered 402 Payment Required on every model with a
       valid key, so the free tier is not available on all accounts. Left in the
       registry because eligibility varies; the client sidelines a provider that
@@ -104,20 +126,24 @@ providers:
         limits:
           - {unit: requests, limit: 30, window: minute, reset: rolling}
           - {unit: tokens, limit: 60000, window: minute, reset: rolling}
-      - id: gemma-4-31b
-        capabilities: [chat, fast]
-        context: 8000
+      - id: qwen-3.8-27b
+        capabilities: [chat, fast, reasoning, tools]
+        context: 65000
         limits:
           - {unit: requests, limit: 30, window: minute, reset: rolling}
           - {unit: tokens, limit: 60000, window: minute, reset: rolling}
 
   github:
     label: GitHub Models
-    base_url: https://models.inference.ai.azure.com
+    # Not verified: models.inference.ai.azure.com no longer resolves, and
+    # models.github.ai/inference comes from the REST docs. The key in .env was
+    # rejected (401) on 2026-10-22, so neither the host nor the model id could
+    # be exercised. Run `of-free registry check` with a fresh token.
+    base_url: https://models.github.ai/inference
     api_key_env: GITHUB_TOKEN
     openai_compatible: true
     sends_rate_limit_headers: true
-    verified_at: 2026-07-26
+    verified_at: 2026-10-22
     capabilities: [chat, code, reasoning, tools]
     # Backed by OpenAI's own structured outputs, which reject minimum/maximum and
     # the other unlisted keywords under strict: true rather than ignoring them.
@@ -129,12 +155,12 @@ providers:
       ceiling rules this provider out of agentic runs, which is what `context`
       below is for.
     models:
-      - id: gpt-4o-mini
-        capabilities: [chat, code, fast, tools, json_schema]
+      - id: openai/gpt-4.1
+        capabilities: [chat, code, tools, json_schema]
         context: 8000
         limits:
-          - {unit: requests, limit: 15, window: minute, reset: rolling}
-          - {unit: requests, limit: 150, window: day, reset: utc_midnight}
+          - {unit: requests, limit: 10, window: minute, reset: rolling}
+          - {unit: requests, limit: 50, window: day, reset: utc_midnight}
 
   mistral:
     label: Mistral La Plateforme
@@ -142,7 +168,7 @@ providers:
     api_key_env: MISTRAL_API_KEY
     openai_compatible: true
     sends_rate_limit_headers: true
-    verified_at: 2026-07-26
+    verified_at: 2026-10-22
     capabilities: [chat, code, tools]
     notes: >
       Spells its headers differently: x-ratelimit-remaining-req-minute rather
@@ -151,13 +177,13 @@ providers:
     models:
       - id: mistral-small-latest
         capabilities: [chat, tools, json_schema]
-        context: 32000
+        context: 262144
         limits:
           - {unit: requests, limit: 50, window: minute, reset: rolling}
           - {unit: tokens, limit: 50000, window: minute, reset: rolling}
       - id: codestral-latest
         capabilities: [code]
-        context: 32000
+        context: 256000
         limits:
           - {unit: requests, limit: 50, window: minute, reset: rolling}
           - {unit: tokens, limit: 50000, window: minute, reset: rolling}
@@ -170,20 +196,22 @@ providers:
     # Verified 2026-07-26: returns no x-ratelimit-* headers on completions,
     # contrary to what its documentation implies.
     sends_rate_limit_headers: false
-    verified_at: 2026-07-26
+    verified_at: 2026-10-22
     capabilities: [chat, reasoning, tools]
     notes: >
+      Verified 2026-10-22: the free Llama 3.3 slug is gone (the unsuffixed one is
+      paid, never route it). Only `:free` ids listed by /models belong here.
       Limits are shared across all `:free` models and enforced per IP, so this
       provider can be exhausted by something else on the same network. The `:free`
       catalogue rotates often — re-check the model ids when routing starts
       returning 404. A `:free` suffix passes tool calls through exactly like the
       paid counterpart, so tool support is a property of the underlying model:
-      the Llama below has it, the Gemmas were never trained for it and answer a
+      the Nemotron below has it, the Gemmas were never trained for it and answer a
       tools request with prose about the tool.
     models:
-      - id: "meta-llama/llama-3.3-70b-instruct:free"
+      - id: "nvidia/nemotron-3-super-120b-a12b:free"
         capabilities: [chat, reasoning, tools, json_schema]
-        context: 128000
+        context: 262144
         limits:
           - {unit: requests, limit: 20, window: minute, reset: rolling}
           - {unit: requests, limit: 200, window: day, reset: utc_midnight}

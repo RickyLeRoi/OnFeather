@@ -92,18 +92,18 @@ Ollama (local)        ready         100%        —
 
 ```console
 $ of-free route --strategy fast
-→ Groq  llama-3.3-70b-versatile
+→ Groq  openai/gpt-oss-120b
   fastest available, 100% quota left
   https://api.groq.com/openai/v1
 
 Fallbacks:
-  Google AI Studio    gemini-2.0-flash        73% left
+  Google AI Studio    gemini-3.8-flash        73% left
   Ollama (local)      qwen2.5:7b             100% left
 ```
 
 ```console
 $ of-free chat "explain a monad in one sentence" -v
-  → Groq / llama-3.3-70b-versatile  12+38 tok  0.41s
+  → Groq / openai/gpt-oss-120b  12+38 tok  0.41s
 
 A monad is a way to chain computations that carry context…
 ```
@@ -114,7 +114,7 @@ silent:
 ```console
 $ of-free chat "..." -v
   ✗ groq: rate limited
-  → Google AI Studio / gemini-2.0-flash  12+44 tok  1.02s
+  → Google AI Studio / gemini-3.8-flash  12+44 tok  1.02s
 ```
 
 ### As an endpoint
