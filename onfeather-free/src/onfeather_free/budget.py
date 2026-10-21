@@ -73,6 +73,15 @@ CREATE TABLE IF NOT EXISTS lockouts (
     until    REAL NOT NULL,
     reason   TEXT
 );
+
+-- 20261022 ++ RG #ModelRetirement A model the provider no longer serves; not a quota problem.
+CREATE TABLE IF NOT EXISTS model_lockouts (
+    provider TEXT NOT NULL,
+    model    TEXT NOT NULL,
+    until    REAL NOT NULL,
+    reason   TEXT,
+    PRIMARY KEY (provider, model)
+);
 """
 
 
@@ -155,9 +164,11 @@ class LedgerSnapshot:
         observations: dict[tuple[str, str], tuple[int, float]],
         observed_limits: dict[tuple[str, str], int],
         providers: tuple[str, ...] = (),
+        model_lockouts: dict[tuple[str, str], float] | None = None,
     ) -> None:
         self.at = at
         self.lockouts = lockouts
+        self.model_lockouts = model_lockouts or {}
         self.observations = observations
         self.observed_limits = observed_limits
         self.providers = providers
@@ -338,9 +349,23 @@ class Ledger:
             )
             self._connection.commit()
 
+    def lock_out_model(
+        self, provider: str, model: str, until: float, reason: str = "model retired"
+    ) -> None:
+        """Take one model out of rotation without touching its siblings."""
+        with self._lock, closing(self._connection.cursor()) as cursor:
+            cursor.execute(
+                "INSERT INTO model_lockouts (provider, model, until, reason) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (provider, model) DO UPDATE SET until = ?, reason = ?",
+                (provider, model, until, reason, until, reason),
+            )
+            self._connection.commit()
+
     def clear(self, provider: str | None = None) -> None:
         with self._lock, closing(self._connection.cursor()) as cursor:
-            tables = ("events", "observations", "observed_limits", "lockouts")
+            tables = (
+                "events", "observations", "observed_limits", "lockouts", "model_lockouts"
+            )
             for table in tables:
                 if provider is None:
                     cursor.execute(f"DELETE FROM {table}")
@@ -380,6 +405,11 @@ class Ledger:
             cursor.execute("SELECT provider, until FROM lockouts WHERE until > ?", (moment,))
             lockouts = {row[0]: float(row[1]) for row in cursor.fetchall()}
 
+            cursor.execute(
+                "SELECT provider, model, until FROM model_lockouts WHERE until > ?", (moment,)
+            )
+            model_lockouts = {(row[0], row[1]): float(row[2]) for row in cursor.fetchall()}
+
             cursor.execute("SELECT provider, limit_key, remaining, at FROM observations")
             observations = {
                 (row[0], row[1]): (int(row[2]), float(row[3])) for row in cursor.fetchall()
@@ -389,7 +419,7 @@ class Ledger:
             observed = {(row[0], row[1]): int(row[2]) for row in cursor.fetchall()}
 
         return LedgerSnapshot(
-            self, moment, lockouts, observations, observed, tuple(providers)
+            self, moment, lockouts, observations, observed, tuple(providers), model_lockouts
         )
 
     def _spent_by_provider(

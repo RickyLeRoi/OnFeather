@@ -47,6 +47,17 @@ CONFIGURATION_COOLDOWN_SECONDS = 900.0
 
 RETRYABLE_STATUSES = frozenset({408, 409, 429})
 
+# 20261022 ++ RG #ModelRetirement Survives restarts; `of-free reset` undoes it.
+RETIRED_MODEL_SECONDS = 86400.0
+
+# 20261022 ++ RG #ModelRetirement What the providers say when a model is gone.
+RETIRED_MODEL_MARKERS = (
+    "model_not_found",
+    "model_archived",
+    "no longer available",
+    "no endpoints found",
+)
+
 
 class CompletionError(Exception):
     """Raised when every candidate failed."""
@@ -66,6 +77,10 @@ class CompletionError(Exception):
         client ends up retrying a malformed request twice, or giving up on a
         quota window that turns over in forty seconds.
         """
+        # 20261022 ++ RG #ModelRetirement A registry problem; a 429 would say "wait".
+        if self.attempts and all(attempt.retired for attempt in self.attempts):
+            return 404
+
         if self.quota_exhausted or any(attempt.status == 429 for attempt in self.attempts):
             return 429
 
@@ -95,6 +110,8 @@ class Attempt:
     correlatable request ids, and the loopback default authenticates nobody.
     The server logs it and answers with `error`; the CLI, talking to the person
     running the process, prints both."""
+    retired: bool = False
+    """The provider no longer serves this model: permanent, unlike a rate limit."""
 
 
 @dataclass
@@ -188,7 +205,7 @@ class Client:
         )
         if not options:
             raise CompletionError(
-                "no provider available for this request",
+                self._no_option_message(moment, environ),
                 [],
                 quota_exhausted=self._anything_locked_out(moment, environ),
             )
@@ -215,6 +232,18 @@ class Client:
         raise CompletionError(
             f"all {len(attempts)} candidates failed; last error: {attempts[-1].error}", attempts
         )
+
+    def _no_option_message(self, moment: datetime, environ: dict | None = None) -> str:
+        # 20261022 ++ RG #ModelRetirement Retirements need a different fix than a missing key.
+        configured = configured_providers(self.registry, environ)
+        retired = self.ledger.snapshot(moment, providers=configured).model_lockouts
+        if retired:
+            names = ", ".join(sorted(f"{provider}/{model}" for provider, model in retired))
+            return (
+                f"no provider available: these models were retired upstream ({names}); "
+                "update the registry, see `of-free registry check`"
+            )
+        return "no provider available for this request"
 
     def _anything_locked_out(self, moment: datetime, environ: dict | None = None) -> bool:
         """Whether an empty candidate list is a quota problem or a config one.
@@ -287,6 +316,27 @@ class Client:
                     ok=False,
                     status=response.status_code,
                     error=_configuration_hint(response.status_code, provider),
+                ),
+                None,
+            )
+
+        if response.status_code >= 400 and _is_retired_model(response):
+            # 20261022 ++ RG #ModelRetirement Not charged: the request never reached a model.
+            self.ledger.lock_out_model(
+                provider.name,
+                model.id,
+                until=time.time() + RETIRED_MODEL_SECONDS,
+                reason=f"http {response.status_code}",
+            )
+            return (
+                Attempt(
+                    provider.name,
+                    model.id,
+                    ok=False,
+                    status=response.status_code,
+                    error=f"model {model.id} is no longer served (http {response.status_code})",
+                    detail=response.text[:200],
+                    retired=True,
                 ),
                 None,
             )
@@ -395,6 +445,13 @@ class Client:
 
         source = environ if environ is not None else os.environ
         return source.get(provider.api_key_env) if provider.api_key_env else None
+
+
+def _is_retired_model(response: httpx.Response) -> bool:
+    if response.status_code not in (400, 404, 410):
+        return False
+    body = response.text[:2000].lower()
+    return any(marker in body for marker in RETIRED_MODEL_MARKERS)
 
 
 @dataclass

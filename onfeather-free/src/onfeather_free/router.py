@@ -116,6 +116,9 @@ def candidates(
                 continue
             if not set(requires) <= model.capabilities:
                 continue
+            # 20261022 ++ RG #ModelRetirement Retired for a day, not a rate-limit window.
+            if (provider.name, model.id) in view.model_lockouts:
+                continue
             status = ledger.status(provider, moment, model_id=model.id, snapshot=view)
             if not status.available:
                 continue

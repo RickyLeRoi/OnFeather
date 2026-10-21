@@ -304,3 +304,29 @@ def test_a_decision_costs_a_constant_number_of_queries(registry, ledger, environ
 
     assert len(queries) == small
     assert small <= 8, queries
+
+
+def test_a_retired_model_is_never_a_candidate(registry, ledger, environ):
+    ledger.lock_out_model("fastcloud", "fast-70b", until=NOW.timestamp() + 3600)
+
+    names = {option.provider.name for option in candidates(
+        registry, ledger, now=NOW, environ=environ)}
+
+    assert "fastcloud" not in names
+    assert "bigcontext" in names
+
+
+def test_a_retirement_lapses_when_its_time_is_up(registry, ledger, environ):
+    ledger.lock_out_model("fastcloud", "fast-70b", until=NOW.timestamp() - 1)
+
+    names = {option.provider.name for option in candidates(
+        registry, ledger, now=NOW, environ=environ)}
+
+    assert "fastcloud" in names
+
+
+def test_reset_clears_retirements(registry, ledger, environ):
+    ledger.lock_out_model("fastcloud", "fast-70b", until=NOW.timestamp() + 3600)
+    ledger.clear("fastcloud")
+
+    assert ledger.snapshot(NOW).model_lockouts == {}

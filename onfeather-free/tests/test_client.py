@@ -300,6 +300,96 @@ def test_no_candidates_raises_immediately(registry, ledger, environ):
         send(client(registry, ledger, always(200)), environ, capability="telepathy")
 
 
+# -- retired models ------------------------------------------------------
+
+RETIRED = {"error": {"code": "model_not_found", "message": "The model does not exist"}}
+
+
+def retired_on(host: str):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if host in request.url.host:
+            return httpx.Response(404, json=RETIRED)
+        return httpx.Response(200, json=completion_body())
+
+    return handler
+
+
+def test_a_retired_model_fails_over_and_is_locked_out(registry, ledger, environ):
+    result = send(client(registry, ledger, retired_on("fastcloud")), environ, strategy="fast")
+
+    assert result.provider.name == "bigcontext"
+    snapshot = ledger.snapshot(NOW)
+    assert ("fastcloud", "fast-70b") in snapshot.model_lockouts
+    assert "fastcloud" not in snapshot.lockouts
+
+
+def test_a_retired_model_is_not_tried_again(registry, ledger, environ):
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.host)
+        return retired_on("fastcloud")(request)
+
+    instance = client(registry, ledger, handler)
+    send(instance, environ, strategy="fast")
+    seen.clear()
+    send(instance, environ, strategy="fast")
+
+    assert all("fastcloud" not in host for host in seen)
+
+
+def test_a_retired_model_is_not_charged_quota(registry, ledger, environ):
+    send(client(registry, ledger, retired_on("fastcloud")), environ, strategy="fast")
+
+    assert ledger.used("fastcloud", MINUTE, NOW) == 0
+
+
+def test_every_model_retired_is_not_a_rate_limit(registry, ledger, environ):
+    with pytest.raises(CompletionError) as caught:
+        send(client(registry, ledger, always(404, RETIRED)), environ)
+
+    assert caught.value.status == 404
+    assert all(attempt.retired for attempt in caught.value.attempts)
+
+
+def test_a_real_429_among_retired_models_still_reads_as_a_rate_limit(registry, ledger, environ):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "fastcloud" in request.url.host:
+            return httpx.Response(429, text="slow down")
+        return httpx.Response(404, json=RETIRED)
+
+    with pytest.raises(CompletionError) as caught:
+        send(client(registry, ledger, handler), environ)
+
+    assert caught.value.status == 429
+
+
+def test_a_google_style_retirement_message_is_recognised(registry, ledger, environ):
+    body = {"error": {"message": "This model models/gemini-2.0-flash is no longer available"}}
+    with pytest.raises(CompletionError) as caught:
+        send(client(registry, ledger, always(404, body)), environ)
+
+    assert caught.value.status == 404
+
+
+def test_a_plain_404_is_not_taken_for_a_retired_model(registry, ledger, environ):
+    with pytest.raises(CompletionError):
+        send(client(registry, ledger, always(404, "not found")), environ)
+
+    assert ledger.snapshot(NOW).model_lockouts == {}
+
+
+def test_once_everything_is_retired_the_message_says_so(registry, ledger, environ):
+    instance = client(registry, ledger, always(404, RETIRED))
+    with pytest.raises(CompletionError):
+        send(instance, environ)
+
+    with pytest.raises(CompletionError, match="retired upstream") as caught:
+        send(instance, environ)
+
+    assert caught.value.status == 503
+
+
 # -- the connection pool --------------------------------------------------
 
 
